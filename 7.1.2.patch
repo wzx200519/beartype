@@ -1,0 +1,54 @@
+diff --git a/7.1.2.patch b/7.1.2.patch
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/beartype_test/_helpers.py b/beartype_test/_helpers.py
+new file mode 100644
+index 00000000..ce9aa7b0
+--- /dev/null
++++ b/beartype_test/_helpers.py
+@@ -0,0 +1,29 @@
++from typing import cast
++
++from beartype import beartype
++from beartype.roar import BeartypeException
++
++
++@beartype
++def validate_and_convert(
++    items: list[int | str],
++    factor: float = 1.0,
++) -> list[float]:
++    return [
++        float((item if isinstance(item, int) else int(item)) * factor)
++        for item in items
++    ]
++
++
++def test_validate_and_convert_inline() -> None:
++    assert validate_and_convert([1, '2', 3], 2.5) == [2.5, 5.0, 7.5]
++
++    exception = None
++
++    try:
++        validate_and_convert(cast(list[int | str], [1, 2.5]))
++    except BeartypeException as exception_caught:
++        exception = exception_caught
++
++    assert exception is not None
++    assert isinstance(exception, BeartypeException)
+diff --git a/beartype_test/test_type_hints.py b/beartype_test/test_type_hints.py
+new file mode 100644
+index 00000000..83e81983
+--- /dev/null
++++ b/beartype_test/test_type_hints.py
+@@ -0,0 +1,10 @@
++def test_validate_and_convert() -> None:
++    from beartype_test._helpers import (
++        test_validate_and_convert_inline,
++        validate_and_convert,
++    )
++
++    assert validate_and_convert([1, '2', '3'], 0.5) == [0.5, 1.0, 1.5]
++    assert validate_and_convert([4, '5']) == [4.0, 5.0]
++
++    test_validate_and_convert_inline()
