@@ -1,0 +1,72 @@
+diff --git a/beartype_test/math_ops.py b/beartype_test/math_ops.py
+new file mode 100644
+index 00000000..fa0fe1b6
+--- /dev/null
++++ b/beartype_test/math_ops.py
+@@ -0,0 +1,37 @@
++#!/usr/bin/env python3
++from functools import wraps
++from typing import get_type_hints
++from beartype import beartype
++
++
++def coerce_params(*param_names: str):
++    def decorator(func):
++        @wraps(func)
++        def wrapper(*args, **kwargs):
++            hints = get_type_hints(func)
++            new_args = list(args)
++            for i, name in enumerate(func.__code__.co_varnames[:func.__code__.co_argcount]):
++                if name in param_names:
++                    expected_type = hints.get(name)
++                    if expected_type is int:
++                        if i < len(new_args):
++                            if isinstance(new_args[i], str):
++                                try:
++                                    new_args[i] = int(new_args[i])
++                                except (ValueError, TypeError):
++                                    pass
++                        elif name in kwargs:
++                            if isinstance(kwargs[name], str):
++                                try:
++                                    kwargs[name] = int(kwargs[name])
++                                except (ValueError, TypeError):
++                                    pass
++            return func(*new_args, **kwargs)
++        return wrapper
++    return decorator
++
++
++@coerce_params("a", "b")
++@beartype
++def divide(a: int, b: int) -> float:
++    return a / b
+diff --git a/test_math_ops.py b/test_math_ops.py
+new file mode 100644
+index 00000000..330a6bdb
+--- /dev/null
++++ b/test_math_ops.py
+@@ -0,0 +1,23 @@
++#!/usr/bin/env python3
++from beartype_test.math_ops import divide
++
++# Test 1: normal int inputs
++print('divide(10, 2) =', divide(10, 2))
++
++# Test 2: string inputs that can be converted
++print('divide("10", 2) =', divide("10", 2))
++
++# Test 3: keyword arguments with strings
++print('divide(a="20", b="4") =', divide(a="20", b="4"))
++
++# Test 4: non-convertible string should still raise beartype exception
++try:
++    divide("abc", 2)
++except Exception as e:
++    print('divide("abc", 2) raised:', type(e).__name__)
++
++# Test 5: wrong type that is not string should raise beartype exception
++try:
++    divide(3.14, 2)
++except Exception as e:
++    print('divide(3.14, 2) raised:', type(e).__name__)
