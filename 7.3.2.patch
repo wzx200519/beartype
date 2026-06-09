@@ -1,0 +1,43 @@
+diff --git a/beartype/_decor/_core.py b/beartype/_decor/_core.py
+--- a/beartype/_decor/_core.py
++++ b/beartype/_decor/_core.py
+@@ -210,20 +210,41 @@ def _make_check_code(obj, conf, cache, **kwargs):
+     obj_id = id(obj)
+     obj_checked = cache.get(obj_id)
+     if obj_checked is not None:
+         return obj_checked
+ 
++    if isinstance(obj, property):
++        fget_checked = (
++            _make_check_code(obj.fget, conf, cache, **kwargs)
++            if obj.fget is not None else None
++        )
++        fset_checked = (
++            _make_check_code(obj.fset, conf, cache, **kwargs)
++            if obj.fset is not None else None
++        )
++        fdel_checked = (
++            _make_check_code(obj.fdel, conf, cache, **kwargs)
++            if obj.fdel is not None else None
++        )
++
++        obj_checked = property(
++            fget_checked,
++            fset_checked,
++            fdel_checked,
++            obj.__doc__,
++        )
++        cache[obj_id] = obj_checked
++        return obj_checked
++
+     if isinstance(obj, type):
+         obj_checked = _make_type_check_code(obj, conf, cache, **kwargs)
+         cache[obj_id] = obj_checked
+         return obj_checked
+ 
+     if callable(obj):
+         obj_checked = _make_func_check_code(obj, conf, cache, **kwargs)
+         cache[obj_id] = obj_checked
+         return obj_checked
+ 
+     return obj
