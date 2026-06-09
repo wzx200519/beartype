@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+# --------------------( LICENSE                            )--------------------
+# Copyright (c) 2014-2026 Beartype authors.
+# See "LICENSE" for further details.
+
+'''
+**Beartype test helpers** (i.e., utility functions and constants shared across
+multiple test modules).
+
+This submodule defines additional helpers specifically for testing type hint
+handling, particularly union types like ``list[int | str]``.
+'''
+
+# ....................{ IMPORTS                            }....................
+from beartype import beartype
+from beartype.roar import BeartypeCallHintParamViolation
+from pytest import raises
+
+# ....................{ FUNCTIONS                          }....................
+@beartype
+def validate_and_convert(items: list[int | str], factor: float = 1.0) -> list[float]:
+    '''
+    Validate that the input items are all either integers or strings, convert
+    string elements to integers, and multiply all elements by the given factor.
+
+    Parameters
+    ----------
+    items : list[int | str]
+        Input list containing only integers or strings.
+    factor : float, optional
+        Scaling factor to multiply each element by. Defaults to ``1.0``.
+
+    Returns
+    -------
+    list[float]
+        Output list with all elements converted to floats and scaled by factor.
+    '''
+    result = []
+    for item in items:
+        if isinstance(item, str):
+            item = int(item)
+        result.append(float(item * factor))
+    return result
+
+# ....................{ TESTS                              }....................
+def test_validate_and_convert_invalid() -> None:
+    '''
+    Test that validate_and_convert raises the appropriate exception when
+    passed an invalid list containing a float element.
+    
+    This is an inline test that directly asserts that beartype correctly
+    detects the type violation.
+    '''
+    invalid_items = [1, "2", 3.0]
+    with raises(BeartypeCallHintParamViolation):
+        validate_and_convert(invalid_items)
+
+def test_validate_and_convert_valid() -> None:
+    '''
+    Test that validate_and_convert correctly handles valid input with mixed
+    integers and strings.
+    '''
+    valid_items = [1, "2", 3, "4"]
+    result = validate_and_convert(valid_items)
+    assert result == [1.0, 2.0, 3.0, 4.0]
+
+    valid_items_with_factor = [1, "2", 3]
+    result = validate_and_convert(valid_items_with_factor, 2.0)
+    assert result == [2.0, 4.0, 6.0]
+
+# ....................{ MAIN                                }....................
+if __name__ == '__main__':
+    test_validate_and_convert_valid()
+    test_validate_and_convert_invalid()
+    print('All tests passed!')
