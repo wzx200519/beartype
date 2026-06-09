@@ -1,0 +1,28 @@
+diff --git a/7.3.3.patch b/7.3.3.patch
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/find_core.py b/find_core.py
+new file mode 100644
+index 00000000..f6887aca
+--- /dev/null
++++ b/find_core.py
+@@ -0,0 +1,5 @@
++import subprocess
++import os
++
++res = subprocess.run(["git", "log", "--all", "--", "beartype/_decor/_core.py"], capture_output=True, text=True)
++print(res.stdout)
+diff --git a/run_git.py b/run_git.py
+new file mode 100644
+index 00000000..7a270f04
+--- /dev/null
++++ b/run_git.py
+@@ -0,0 +1,8 @@
++import os
++import subprocess
++try:
++    with open('/app/beartype-1/git_out.txt', 'w') as f:
++        subprocess.run(['git', 'status'], stdout=f, stderr=subprocess.STDOUT)
++except Exception as e:
++    with open('/app/beartype-1/git_out.txt', 'w') as f:
++        f.write(str(e))
