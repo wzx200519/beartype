@@ -1,0 +1,268 @@
+diff --git a/beartype/_decor/decorcore.py b/beartype/_decor/decorcore.py
+--- a/beartype/_decor/decorcore.py
++++ b/beartype/_decor/decorcore.py
+@@ -38,70 +38,197 @@
+ # ....................{ DECORATORS                         }....................
+ def beartype_object(
+     # Mandatory parameters.
+     obj: BeartypeableT,
+     conf: BeartypeConf,
+ 
+     # Variadic keyword parameters.
+     **kwargs
+ ) -> BeartypeableT:
+     '''
+     Decorate the passed **beartypeable** (i.e., caller-defined object that may
+     be decorated by the :func:`beartype.beartype` decorator) with optimal
+     type-checking dynamically generated unique to that beartypeable.
+ 
++    **Refactoring note (v7.3.1):** this function now short-circuits for
++    @property-style descriptors *before* dispatching to the existing
++    ``beartype_nontype`` / ``beartype_type`` split.  See
++    :func:`._make_check_code` for the rationale and implementation.
++
+     Parameters
+     ----------
+     obj : BeartypeableT
+         **Beartypeable** (i.e., pure-Python callable or class) to be decorated.
+     conf : BeartypeConf
+         **Beartype configuration** (i.e., dataclass encapsulating all flags,
+         options, settings, and other metadata configuring the current decoration
+         of the decorated callable or class).
+ 
+     All remaining keyword parameters are passed as is to whichever lower-level
+     decorator this higher-level decorator calls on the passed beartypeable.
+     However, note that external callers are implicitly prohibited from passing
+     any remaining keyword parameters. Why? Because the higher-level
+     :func:`beartype._decor.decorcache.beartype` decorator identical to the
+     :func:`beartype.beartype` decorator (which calls this lower-level decorator)
+     neither accepts nor passes this lower-level decorator any variadic keyword
+     parameters. Therefore, this lower-level decorator accepts variadic keyword
+     parameters *only* as a convenience to other low-level private functionality
+     distributed throughout the :mod:`beartype` codebase, which can occasionally
+     pass such keyword-only parameters. Look. It's complicated. Like everything.
+ 
+     Examples of lower-level decorators that do this include:
+ 
+     * :func:`beartype._decor._nontype.decornontype._beartype_pseudofunc`.
+     * :func:`beartype._decor._type.decortype.beartype_type`.
+ 
+     Returns
+     -------
+     BeartypeableT
+         Either:
+ 
+         * If the passed object is a class, this existing class embellished with
+           dynamically generated type-checking.
+         * If the passed object is a callable, a new callable wrapping that
+           callable with dynamically generated type-checking.
+ 
+     See Also
+     --------
+     :func:`beartype._decor.decormain.beartype`
+         Memoized parent decorator wrapping this unmemoized child decorator.
+     '''
+-    # print(f'Decorating object {repr(obj)}...')
+-
+-    # Return either...
+-    return (
+-        _beartype_object_fatal(obj, conf=conf, **kwargs)
+-        # If this beartype configuration requests that this decorator raise
+-        # fatal exceptions at decoration time, defer to the lower-level
+-        # decorator doing so;
+-        if conf.warning_cls_on_decorator_exception is None else
+-        # Else, this beartype configuration requests that this decorator emit
+-        # fatal warnings at decoration time. In this case, defer to the
+-        # lower-level decorator doing so.
+-        _beartype_object_nonfatal(obj, conf=conf, **kwargs)
+-    )
+-
++    # ----[ BEGIN v7.3.1 refactor: explicit @property support ]----
++    # MODIFICATION #1: short-circuit for property-style descriptors.
++    # _make_check_code() returns (description, decorator_closure) for
++    # property descriptors *including* user-defined property subclasses that
++    # the existing string-based MODULE_TO_TYPE_NAME_TO_BEARTYPE_DECORATOR
++    # table would otherwise miss.  See :func:`._make_check_code` for details.
++    property_entry = _make_check_code(obj, conf)
++    if property_entry is not None:
++        _description, decorator = property_entry
++        return decorator(obj)  # type: ignore[return-value]
++    # ----[ END   v7.3.1 refactor: explicit @property support ]----
++
++    # Fall through to the pre-existing fatal / non-fatal split.
++    return (
++        _beartype_object_fatal(obj, conf=conf, **kwargs)
++        # If this beartype configuration requests that this decorator raise
++        # fatal exceptions at decoration time, defer to the lower-level
++        # decorator doing so;
++        if conf.warning_cls_on_decorator_exception is None else
++        # Else, this beartype configuration requests that this decorator emit
++        # fatal warnings at decoration time. In this case, defer to the
++        # lower-level decorator doing so.
++        _beartype_object_nonfatal(obj, conf=conf, **kwargs)
++    )
++
++# ....................{ PRIVATE ~ caches                    }....................
++_CHECK_CODE_DESCRIPTOR_CACHE: dict[tuple, object] = {}
++'''
++Per-(descriptor-type, conf) cache of **check-code generators** produced by
++:func:`._make_check_code`.  Because the code snippets dynamically generated to
++type-check a property descriptor depend only on:
++
++* The concrete class of that descriptor (e.g. ``property`` vs. a user-defined
++  subclass thereof), and
++* The active :class:`BeartypeConf`,
++
++we can safely memoize the generated snippet and reuse it across all property
++attributes of classes sharing the same configuration.
++'''
++
++# ....................{ PRIVATE ~ helpers                   }....................
++def _is_property_descriptor(obj: object) -> bool:
++    '''
++    :data:`True` only if the passed object is a **property-style descriptor**
++    (i.e. an instance of the builtin :class:`property` type *or* a subclass
++    thereof declaring the canonical ``fget`` / ``fset`` / ``fdel`` attributes).
++
++    Unlike the existing string-based dispatch table in
++    :mod:`beartype._decor._nontype._decornontypemap`, this tester is resilient
++    to:
++
++    * User-defined ``property`` subclasses (e.g. ``class MyProp(property): ...``)
++      whose ``__class__.__module__``/``__name__`` pair does *not* match
++      ``"builtins"``/``"property"`` and is therefore missed by the string table.
++    * Third-party descriptor types mimicking the :class:`property` protocol.
++    '''
++    # Fast path: pure builtin property.  This covers the overwhelming majority
++    # of real-world cases and short-circuits in a single isinstance() call.
++    if type(obj) is property:
++        return True
++
++    # Slow path: property subclass.  We require *both* isinstance() semantics
++    # *and* the existence of fget/fset/fdel to avoid accidentally matching
++    # arbitrary descriptors that happen to subclass property for some unrelated
++    # reason.
++    return (
++        isinstance(obj, property) and
++        hasattr(obj, 'fget') and
++        hasattr(obj, 'fset') and
++        hasattr(obj, 'fdel')
++    )
++
++
++def _make_check_code(
++    # Mandatory parameters.
++    obj: BeartypeableT,
++    conf: BeartypeConf,
++) -> 'tuple[str, object] | None':
++    '''
++    Generate a (human-readable description, decorator callable) pair for the
++    passed beartypeable object, or :data:`None` if this object falls through to
++    the general-purpose ``beartype_nontype`` / ``beartype_type`` dispatch.
++
++    This function is the **central refactoring target of v7.3.1**.
++    Its responsibilities are:
++
++    1. **Explicitly recognize @property descriptors** -- including user-defined
++       subclasses of :class:`property` that are currently missed by the
++       string-based ``MODULE_TO_TYPE_NAME_TO_BEARTYPE_DECORATOR`` table in
++       :mod:`beartype._decor._nontype._decornontypemap`.
++    2. **Cache per-(descriptor class, conf)** -- so that repeatedly decorating
++       ``@property`` methods across many classes under the same configuration
++       does not re-issue the same dynamic check-code.
++    3. **Return a concrete decorator callable** -- a thin closure that calls
++       into :func:`beartype._decor._nontype._decordescriptor.beartype_descriptor_decorator_builtin_property`
++       while preserving the ``property(fget, fset, fdel, doc)`` protocol.
++
++    Parameters
++    ----------
++    obj : BeartypeableT
++        Object to be decorated.
++    conf : BeartypeConf
++        Active beartype configuration.
++
++    Returns
++    -------
++    Optional[Tuple[str, Callable[[BeartypeableT], BeartypeableT]]]
++        Either:
++        * ``(description, decorator)`` -- if this object is a property-style
++          descriptor.  ``description`` is a short human-readable tag used by
++          :func:`beartype_object` for diagnostic/cache reporting.  ``decorator``
++          is a 1-arg callable that type-checks the descriptor.
++        * :data:`None` -- if this object is *not* a property-style descriptor
++          and must be handled by the existing dispatch paths.
++    '''
++    # Bail out *immediately* for non-descriptor objects.  The isinstance() here
++    # is deliberately a fast-path so that the hot path for plain functions and
++    # classes incurs essentially no additional cost.
++    if not _is_property_descriptor(obj):
++        return None
++
++    # Cache key is (descriptor class, conf).  Using the descriptor *class*
++    # (rather than the descriptor instance) lets us share the generated
++    # check-code across every property attribute of the same kind within a
++    # given @beartype configuration.
++    cache_key = (type(obj), conf)
++
++    cached = _CHECK_CODE_DESCRIPTOR_CACHE.get(cache_key)
++    if cached is not None:
++        return cached  # type: ignore[return-value]
++
++    # Avoid circular import dependencies -- the descriptor decorator module
++    # transitively imports this one.  (Matches the pattern used elsewhere in
++    # the codebase, e.g. decortype.py:77-78.)
++    from beartype._decor._nontype._decordescriptor import (
++        beartype_descriptor_decorator_builtin_property as _beartype_property)
++
++    # The "check code" is *not* a raw Python source string in this refactor --
++    # because the dynamic code that type-checks a property descriptor's fget /
++    # fset / fdel is already encapsulated inside ``beartype_func``.  Instead we
++    # generate a *bound closure* that packages that code in a reusable,
++    # cacheable, callable form.  This matches the level of abstraction exposed
++    # by the rest of the unmemoized decorator layer.
++    description = f'property<{type(obj).__name__}>'
++
++    def _property_check_code(descriptor: BeartypeableT) -> BeartypeableT:
++        '''
++        Apply return-value type-checking to ``descriptor.fget`` / ``fset`` /
++        ``fdel`` and rebuild an equivalent property descriptor.
++        '''
++        return _beartype_property(descriptor, conf=conf)  # type: ignore[return-value]
++
++    result = (description, _property_check_code)
++    _CHECK_CODE_DESCRIPTOR_CACHE[cache_key] = result
++    return result
++
+ # ....................{ PRIVATE ~ decorators               }....................
+ def _beartype_object_fatal(obj: BeartypeableT, **kwargs) -> BeartypeableT:
+@@ -161,6 +288,11 @@
+     with optimal type-checking dynamically generated unique to that
+     beartypeable and any otherwise uncaught exception raised by doing so safely
+     coerced into a warning instead.
++
++    **Refactoring note (v7.3.1):** this function now also short-circuits for
++    @property-style descriptors so that property methods with
++    ``warning_cls_on_decorator_exception`` configured still benefit from
++    explicit property recognition rather than relying on the string-based
++    dispatch table.  See :func:`._make_check_code` for details.
+ 
+     Motivation
+     ----------
+@@ -223,4 +365,17 @@
+ 
+     # Attempt to decorate the passed beartypeable.
+     try:
++        # ----[ BEGIN v7.3.1 refactor: explicit @property support ]----
++        # MODIFICATION #3: mirror the short-circuit here so that the
++        # non-fatal path also benefits from explicit property recognition.
++        # We do *not* fold this into ``_beartype_object_fatal`` because the
++        # non-fatal path is specifically invoked from :func:`beartype_object`
++        # when ``warning_cls_on_decorator_exception`` is set and must stay
++        # independent.
++        property_entry = _make_check_code(obj, conf)
++        if property_entry is not None:
++            _description, decorator = property_entry
++            return decorator(obj)  # type: ignore[return-value]
++        # ----[ END   v7.3.1 refactor: explicit @property support ]----
++
+         return _beartype_object_fatal(obj, conf=conf, **kwargs)
