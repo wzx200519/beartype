@@ -19,6 +19,7 @@ from beartype.typing import (
     Set,
 )
 from beartype._cave._cavemap import NoneTypeOr
+from beartype._cave._cavefast import MethodDecoratorPropertyType
 from beartype._conf.confmain import BeartypeConf
 from beartype._data.cls.datacls import TYPES_BEARTYPEABLE
 from beartype._data.typing.datatyping import (
@@ -75,7 +76,7 @@ def beartype_type(
 
     # ....................{ IMPORTS                        }....................
     # Avoid circular import dependencies.
-    from beartype._decor.decorcore import beartype_object
+    from beartype._decor.decorcore import _make_check_code, beartype_object
 
     # ....................{ NOOP                           }....................
     # If the memoized type beartyped attribute already exists for this type, a
@@ -178,10 +179,22 @@ def beartype_type(
         ):
             # print(f'Decorating {repr(cls)} attribute "{attr_name}"...')
 
-            # This attribute decorated with type-checking configured by this
-            # configuration if *NOT* already decorated.
-            attr_value_beartyped = beartype_object(  # type: ignore[type-var]
-                obj=attr_value, conf=conf, cls_stack=cls_stack)
+            # If this attribute is a property descriptor, explicitly delegate
+            # to the _make_check_code function which recognizes property type
+            # descriptors and generates return value type-checking code for
+            # their getter methods. This ensures that @property methods in
+            # @beartype-decorated classes have their return values type-checked
+            # at call time.
+            if isinstance(attr_value, MethodDecoratorPropertyType):
+                attr_value_beartyped = _make_check_code(  # type: ignore[type-var]
+                    obj=attr_value, conf=conf, cls_stack=cls_stack)
+            # Else, this attribute is *NOT* a property descriptor. In this
+            # case, delegate to the general-purpose beartype_object decorator.
+            else:
+                # This attribute decorated with type-checking configured by this
+                # configuration if *NOT* already decorated.
+                attr_value_beartyped = beartype_object(  # type: ignore[type-var]
+                    obj=attr_value, conf=conf, cls_stack=cls_stack)
 
             # If this decorated attribute differs from the original attribute,
             # @beartype actually decorated this attribute with type-checking. In

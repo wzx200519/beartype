@@ -1,0 +1,224 @@
+diff --git a/beartype/_decor/_type/decortype.py b/beartype/_decor/_type/decortype.py
+index 99b60207..107a2412 100644
+--- a/beartype/_decor/_type/decortype.py
++++ b/beartype/_decor/_type/decortype.py
+@@ -19,6 +19,7 @@ from beartype.typing import (
+     Set,
+ )
+ from beartype._cave._cavemap import NoneTypeOr
++from beartype._cave._cavefast import MethodDecoratorPropertyType
+ from beartype._conf.confmain import BeartypeConf
+ from beartype._data.cls.datacls import TYPES_BEARTYPEABLE
+ from beartype._data.typing.datatyping import (
+@@ -75,7 +76,7 @@ def beartype_type(
+ 
+     # ....................{ IMPORTS                        }....................
+     # Avoid circular import dependencies.
+-    from beartype._decor.decorcore import beartype_object
++    from beartype._decor.decorcore import _make_check_code, beartype_object
+ 
+     # ....................{ NOOP                           }....................
+     # If the memoized type beartyped attribute already exists for this type, a
+@@ -178,10 +179,22 @@ def beartype_type(
+         ):
+             # print(f'Decorating {repr(cls)} attribute "{attr_name}"...')
+ 
+-            # This attribute decorated with type-checking configured by this
+-            # configuration if *NOT* already decorated.
+-            attr_value_beartyped = beartype_object(  # type: ignore[type-var]
+-                obj=attr_value, conf=conf, cls_stack=cls_stack)
++            # If this attribute is a property descriptor, explicitly delegate
++            # to the _make_check_code function which recognizes property type
++            # descriptors and generates return value type-checking code for
++            # their getter methods. This ensures that @property methods in
++            # @beartype-decorated classes have their return values type-checked
++            # at call time.
++            if isinstance(attr_value, MethodDecoratorPropertyType):
++                attr_value_beartyped = _make_check_code(  # type: ignore[type-var]
++                    obj=attr_value, conf=conf, cls_stack=cls_stack)
++            # Else, this attribute is *NOT* a property descriptor. In this
++            # case, delegate to the general-purpose beartype_object decorator.
++            else:
++                # This attribute decorated with type-checking configured by this
++                # configuration if *NOT* already decorated.
++                attr_value_beartyped = beartype_object(  # type: ignore[type-var]
++                    obj=attr_value, conf=conf, cls_stack=cls_stack)
+ 
+             # If this decorated attribute differs from the original attribute,
+             # @beartype actually decorated this attribute with type-checking. In
+diff --git a/beartype/_decor/decorcore.py b/beartype/_decor/decorcore.py
+index 03c7e6f9..2d1de7d4 100644
+--- a/beartype/_decor/decorcore.py
++++ b/beartype/_decor/decorcore.py
+@@ -18,12 +18,13 @@ This private submodule is *not* intended for importation by downstream callers.
+ 
+ # ....................{ IMPORTS                            }....................
+ # from beartype.roar import BeartypeException
++from beartype._cave._cavefast import MethodDecoratorPropertyType
+ from beartype._conf.confmain import BeartypeConf
+ from beartype._data.typing.datatyping import (
+     BeartypeableT,
+     TypeWarning,
+ )
+-from beartype._decor._nontype.decornontype import beartype_nontype
++from beartype._decor._nontype.decornontype import beartype_func, beartype_nontype
+ from beartype._decor._type.decortype import beartype_type
+ from beartype._util.cls.utilclstest import is_type_subclass
+ from beartype._util.error.utilerrwarn import issue_warning
+@@ -105,6 +106,137 @@ def beartype_object(
+         _beartype_object_nonfatal(obj, conf=conf, **kwargs)
+     )
+ 
++# ....................{ PRIVATE ~ code                     }....................
++def _make_check_code(obj: BeartypeableT, **kwargs) -> BeartypeableT:
++    '''
++    Generate type-checking code for the passed **beartypeable** object with
++    explicit recognition of **property type descriptors** (i.e., C-based
++    unbound method descriptors instantiated by the builtin :class:`property`
++    decorator type).
++
++    This function is the central code generation dispatcher, explicitly
++    recognizing property descriptors and generating appropriate return value
++    type-checking code for their getter methods. When a class is decorated by
++    :func:`beartype.beartype`, this function ensures that ``@property``
++    methods defined in that class have their return values type-checked at
++    call time.
++
++    Parameters
++    ----------
++    obj : BeartypeableT
++        **Beartypeable** (i.e., pure-Python callable, class, or builtin
++        method descriptor) to be decorated with type-checking.
++
++    All remaining keyword parameters are passed as is to a lower-level
++    decorator defined by this submodule (e.g., :func:`.beartype_func`).
++
++    Returns
++    -------
++    BeartypeableT
++        Either:
++
++        * If the passed object is a property descriptor, a new property
++          descriptor whose getter, setter, and deleter (if any) are wrapped
++          with dynamically generated type-checking.
++        * If the passed object is a class, this existing class embellished
++          with dynamically generated type-checking.
++        * If the passed object is a callable, a new callable wrapping that
++          callable with dynamically generated type-checking.
++
++    See Also
++    --------
++    :func:`.beartype_descriptor_decorator_builtin_property`
++        Lower-level decorator performing the same property-specific
++        decoration, to which this function delegates for property objects.
++    '''
++
++    # If this object is a property descriptor, explicitly handle it by
++    # decorating its getter, setter, and deleter functions with
++    # type-checking. This ensures that @property methods in @beartype-
++    # decorated classes have their return values type-checked at call time.
++    if isinstance(obj, MethodDecoratorPropertyType):
++        return _make_check_code_property(obj, **kwargs)  # type: ignore[return-value]
++
++    # Return either...
++    return (
++        # If this object is a class, this class decorated with type-checking.
++        beartype_type(obj, **kwargs)  # type: ignore[return-value]
++        if isinstance(obj, type) else
++        # Else, this object is a non-class. In this case, this non-class
++        # decorated with type-checking.
++        beartype_nontype(obj, **kwargs)  # type: ignore[return-value]
++    )
++
++
++def _make_check_code_property(
++    descriptor: BeartypeableT, **kwargs) -> BeartypeableT:
++    '''
++    Generate type-checking code for the passed **builtin property decorator
++    object** (i.e., C-based unbound method descriptor instantiated by the
++    builtin :class:`property` decorator type) with explicit return value
++    type-checking for the getter method.
++
++    This function explicitly recognizes the property descriptor structure and
++    generates type-checking code that validates:
++
++    * The **return value** of the getter function (``fget``) against its
++      return type annotation.
++    * The **parameter** of the setter function (``fset``) against its
++      parameter type annotation (if a setter exists).
++    * The **return value** of the deleter function (``fdel``) against its
++      return type annotation (if a deleter exists).
++
++    Parameters
++    ----------
++    descriptor : BeartypeableT
++        Property descriptor to be decorated by :func:`beartype.beartype`.
++
++    All remaining keyword parameters are passed as is to the lower-level
++    :func:`.beartype_func` decorator internally called by this function on
++    the pure-Python functions encapsulated in this descriptor.
++
++    Returns
++    -------
++    BeartypeableT
++        New property descriptor wrapping this descriptor with type-checking.
++    '''
++    assert isinstance(descriptor, MethodDecoratorPropertyType), (
++        f'{repr(descriptor)} not builtin @property method descriptor.')
++
++    # Pure-Python unbound getter, setter, and deleter functions wrapped by this
++    # descriptor if any *OR* "None" otherwise.
++    descriptor_getter  = descriptor.fget   # type: ignore[assignment,union-attr]
++    descriptor_setter  = descriptor.fset   # type: ignore[assignment,union-attr]
++    descriptor_deleter = descriptor.fdel   # type: ignore[assignment,union-attr]
++
++    # Decorate this getter function with type-checking, which generates
++    # return value type-checking code for the property's getter.
++    #
++    # Note that *ALL* property method descriptors wrap at least a getter
++    # function (but *NOT* necessarily a setter or deleter function). This
++    # function is thus guaranteed to be non-"None".
++    descriptor_getter = beartype_func(  # type: ignore[type-var]
++        func=descriptor_getter,  # pyright: ignore
++        **kwargs
++    )
++
++    # If this property method descriptor additionally wraps a setter and/or
++    # deleter function, type-check those functions as well.
++    if descriptor_setter is not None:
++        descriptor_setter = beartype_func(descriptor_setter, **kwargs)
++    if descriptor_deleter is not None:
++        descriptor_deleter = beartype_func(descriptor_deleter, **kwargs)
++
++    # Return a new property method descriptor decorating all of these functions,
++    # implicitly destroying the prior descriptor.
++    return property(  # type: ignore[return-value]
++        fget=descriptor_getter,
++        fset=descriptor_setter,
++        fdel=descriptor_deleter,
++        doc=descriptor.__doc__,
++    )
++
++
+ # ....................{ PRIVATE ~ decorators               }....................
+ def _beartype_object_fatal(obj: BeartypeableT, **kwargs) -> BeartypeableT:
+     '''
+@@ -137,15 +269,9 @@ def _beartype_object_fatal(obj: BeartypeableT, **kwargs) -> BeartypeableT:
+     '''
+     # print(f'Decorating object {repr(obj)} with type-checking...')
+ 
+-    # Return either...
+-    return (
+-        # If this object is a class, this class decorated with type-checking.
+-        beartype_type(obj, **kwargs)  # type: ignore[return-value]
+-        if isinstance(obj, type) else
+-        # Else, this object is a non-class. In this case, this non-class
+-        # decorated with type-checking.
+-        beartype_nontype(obj, **kwargs)  # type: ignore[return-value]
+-    )
++    # Delegate to the central code generation dispatcher, which explicitly
++    # recognizes property descriptors and other beartypeable objects.
++    return _make_check_code(obj, **kwargs)
+ 
+ 
+ #FIXME: Unit test us up, please.
