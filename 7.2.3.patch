@@ -1,0 +1,38 @@
+--- a/beartype/beartype_test/math_ops.py
++++ b/beartype/beartype_test/math_ops.py
+@@ -0,0 +1,35 @@
++import inspect
++import functools
++from beartype import beartype
++
++def coerce_int_args(func):
++    """
++    参数转换装饰器：
++    自动将标注为 int 的字符串参数转换为整数。
++    如果转换失败（例如传入 "abc"），则保留原字符串，
++    交由内层的 @beartype 触发标准的类型违规异常。
++    """
++    sig = inspect.signature(func)
++    
++    @functools.wraps(func)
++    def wrapper(*args, **kwargs):
++        bound_args = sig.bind(*args, **kwargs)
++        bound_args.apply_defaults()
++        
++        for name, value in bound_args.arguments.items():
++            param = sig.parameters[name]
++            
++            if param.annotation in (int, 'int') and isinstance(value, str):
++                try:
++                    bound_args.arguments[name] = int(value)
++                except ValueError:
++                    pass
++                    
++        return func(*bound_args.args, **bound_args.kwargs)
++    return wrapper
++
++
++@coerce_int_args
++@beartype
++def divide(a: int, b: int) -> float:
++    return a / b
