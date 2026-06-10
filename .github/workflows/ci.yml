@@ -1,0 +1,455 @@
+---
+# --------------------( LICENSE                            )--------------------
+# Copyright (c) 2014-2025 Beartype authors.
+# See "LICENSE" for further details.
+#
+# --------------------( SYNOPSIS                           )--------------------
+# GitHub-specific continuous integration (CI) configuration, enabling the usual
+# GitHub Actions workflow for pure-Python packages exercised by "tox".
+#
+# --------------------( SEE ALSO                           )--------------------
+# * https://hynek.me/articles/python-github-actions
+#   Well-authored blog post strongly inspiring this configuration.
+
+# ....................{ METADATA                           }....................
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# WARNING: Changes to this name *MUST* be manually synchronized with:
+# * The "|GitHub Actions badge|" image URL in our top-level "README.rst" file.
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# Non-human-readable (i.e., machine-readable) label associated with this GitHub
+# Actions workflow.
+name: tests
+
+# ....................{ TRIGGER                            }....................
+# Confine testing to only...
+#
+# Note that "**" matches all (possibly deeply "/"-nested) branches. See also:
+# * https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet
+#   GitHub-specific glob syntax for matching branches and tags below.
+on:
+  # Pushes to the main branch. Pushes to other branches are assumed to be
+  # developer-specific and thus already tested locally by that developer.
+  push:
+    branches:
+      - main
+
+  # Pull requests against the main branch. Pull requests against other branches
+  # should, ideally, *NEVER* occur; if and when they do, we ignore them.
+  pull_request:
+    branches:
+      - main  # '**'
+
+  # Enable manual workflow triggering from the Actions tab.
+  workflow_dispatch:
+
+# ....................{ PERMISSIONS                        }....................
+# Default job security model applied by default to all jobs performed below.
+permissions:
+  # Permit third-party GitHub Actions to read the contents of this repository's
+  # ".git/" subdirectory (e.g., to list all git commits). This is the safest
+  # explicit permission that a GitHub workflow can currently grant to
+  # third-party GitHub Actions. Ideally, this permission would be the default.
+  # According to the CodeQL code scanner, however, this is *NOT* the case.
+  # CodeQL security alerts document that:
+  #     If a GitHub Actions job or workflow has no explicit permissions set,
+  #     then the repository permissions are used. Repositories created under
+  #     organizations inherit the organization permissions. The organizations or
+  #     repositories created before February 2023 have the default permissions
+  #     set to read-write. Often these permissions do not adhere to the
+  #     principle of least privilege and can be reduced to read-only, leaving
+  #     the write permission only to a specific types as issues: write or
+  #     pull-requests: write.
+  #
+  # Explicitly granting this permission elides both this CodeQL security alert
+  # and the underlying insecurity described by this alert.
+  contents: read
+
+# ....................{ MAIN                               }....................
+jobs:
+  # ...................{ TESTS                              }...................
+  # Job iteratively validating our test suite against all Python interpreters
+  # supported by this package (and also measuring the coverage of that suite).
+  tests:
+    # ..................{ MATRIX                             }..................
+    strategy:
+      matrix:
+        # List of all platform-specific Docker images to test against,
+        # including:
+        # * The latest Long-Term Service (LTS) release of Ubuntu Linux, still
+        #   the most popular Linux distro and thus a sane baseline.
+        # * The latest *whatever* release of Microsoft Windows. Although Linux
+        #   and macOS are both POSIX-compliant and thus crudely comparable from
+        #   the low-level CLI perspective, Windows is POSIX-noncompliant and
+        #   thus heavily divergent from both macOS and Linux.
+        # * The latest *whatever* release of Apple macOS. We don't particularly
+        #   need to exercise tests on macOS, given the platform's patent
+        #   POSIX-compliant low-level similarities to Linux, but... what the
+        #   heck. Why not? Since this is the lowest priority, we defer macOS
+        #   testing until last.
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+
+        #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # WARNING: Changes to this section *MUST* be manually synchronized with:
+        # * The "envlist" setting of the "[tox]" subsection in "tox.ini".
+        # * The "include" setting below.
+        #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+        # List of all "tox" environments (defined by the "envlist" setting of
+        # the "[tox]" subsection in "tox.ini") to be tested, which the
+        # ${TOXENV} environment variable declared below exposes to "tox".
+        tox-env:
+          - py310-coverage
+          - py311-coverage
+          - py312-coverage
+          - py313-coverage
+          # - py313t-coverage
+          - py314-coverage
+          # - py314t-coverage
+          - py315-coverage
+          # - py315t-coverage
+
+          #FIXME: Uncomment after the first Python 3.16 alpha drops. See also:
+          #    https://peps.python.org/pep-0790
+          # - py316-coverage
+          # # - py316t-coverage
+
+          #FIXME: Uncomment after we resolve tests currently broken under *ANY*
+          #PyPy version. All tests used to pass under PyPy 3.7 and 3.8, but were
+          #recently broken by work generalizing @beartype to decorate builtin
+          #method descriptors (e.g., @property, @classmethod, @staticmethod).
+          # - pypy310-coverage
+
+        # Map each "tox" environment name listed in the "tox-env" list above to
+        # the corresponding "python-version" string supported by the
+        # "actions/setup-python" GitHub Action run below. Note that:
+        # * Python version specifiers *MUST* be quoted: e.g.,
+        #     # Do this.
+        #     python-version: "3.10"
+        #     # Do *NOT* do this.
+        #     python-version: 3.10
+        #   Why? Because YAML sensibly treats an unquoted literal satisfying
+        #   floating-point syntax as a floating-point number and thus silently
+        #   truncates *ALL* ignorable zeroes suffixing that number (e.g.,
+        #   truncating 3.10 to 3.1). That then results in non-human-readable CI
+        #   errors, as discussed upstream at:
+        #     https://github.com/actions/setup-python/issues/160#issuecomment-724485470
+        # * CPython free-threading (i.e., GIL-less, no-GIL) variants may be
+        #   selected with the "t" suffix (e.g., "3.14t", the free-threading
+        #   variant of CPython 3.14).
+        # * CPython pre-releases may be selected with a space-delimited range
+        #   embedded in a single quoted version specifier. For example,
+        #   selecting the Python 3.11 pre-release reduces to:
+        #     python-version: "3.11.0-alpha - 3.11.0"
+        include:
+          - { python-version: "3.10",  tox-env: "py310-coverage" }
+          - { python-version: "3.11",  tox-env: "py311-coverage" }
+          - { python-version: "3.12",  tox-env: "py312-coverage" }
+          - { python-version: "3.13",  tox-env: "py313-coverage" }
+          - { python-version: "3.14",  tox-env: "py314-coverage" }
+          - { python-version: "3.15.0-alpha - 3.15.0", tox-env: "py315-coverage" }
+
+    # ..................{ SETTINGS                           }..................
+    # Arbitrary human-readable description.
+    name: "[${{ matrix.platform }}] Python ${{ matrix.python-version }} CI"
+
+    # Name of the current Docker image to run tests under.
+    runs-on: "${{ matrix.platform }}"
+
+    # Time in minutes to wait on the command pipeline run below to exit
+    # *BEFORE* sending a non-graceful termination request (i.e., "SIGTERM"
+    # under POSIX-compliant systems).
+    #
+    # Note that 10 minutes is no longer enough to run the full project test
+    # suite across all supported Python versions and platforms, sadly.
+    timeout-minutes: 20
+
+    # ..................{ VARIABLES                          }..................
+    # External shell environment variables exposed to commands run below.
+    env:
+      # .................{ VARIABLES ~ pip                    }.................
+      # Prevent "pip" from wasting precious continuous integration (CI) minutes
+      # deciding whether it should be upgrading. We're *NOT* upgrading you,
+      # "pip". Accept this and let us test faster.
+      PIP_NO_PIP_VERSION_CHECK: 1
+
+      # Instruct "pip" to prefer binary wheels to source tarballs, reducing
+      # installation time *AND* improving installation portability.
+      PIP_PREFER_BINARY: 1
+
+      # .................{ VARIABLES ~ python                 }.................
+      # Enable the Python fault handler, emitting a detailed traceback on
+      # segmentation faults. By default, Python simply emits the fault itself.
+      # Most devs regard this as yet another Python shell variable that should
+      # have been enabled by default. We are one such dev.
+      PYTHONFAULTHANDLER: 1
+
+      # Prevent Python from buffering and hence failing to log output in the
+      # unlikely (but feasible) event of catastrophic failure from either the
+      # active Python process or OS kernel.
+      PYTHONUNBUFFERED: 1
+
+      # .................{ VARIABLES ~ tox                    }.................
+      # Map from the current item of the "tox-env" list defined above to the
+      # ${TOXENV} environment variable recognized by "tox".
+      TOXENV: "${{ matrix.tox-env }}"
+
+    # ..................{ PROCESS                            }..................
+    steps:
+      # ..................{ SETUP                            }..................
+      - name: 'Checking out repository...'
+        uses: 'actions/checkout@v6'
+      - name: "Installing Python ${{ matrix.python-version }}..."
+        uses: 'actions/setup-python@v6'
+        with:
+          python-version: "${{ matrix.python-version }}"
+          allow-prereleases: true
+      - name: 'Installing uv...'
+        uses: 'astral-sh/setup-uv@v7'
+        with:
+          # Temporarily cache third-party packages subsequently installed by
+          # "uv pip" below. This action intelligently defines the cache key to
+          # be hashed against the top-level "pyproject.toml" file and thus
+          # silently clears this cache on each change to that file. See also:
+          #     https://github.com/actions/setup-python?tab=readme-ov-file#caching-packages-dependencies
+          enable-cache: true
+          cache-dependency-glob: 'pyproject.toml'
+      - name: 'Displaying Python metadata...'
+        run: |
+          python3 -VV
+          python3 -m site
+
+          # Print either:
+          # * For free-threading Python builds:
+          #       Py_GIL_DISABLED: 1
+          # * For GIL-encumbered Python builds:
+          #       Py_GIL_DISABLED: 0
+          python3 -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
+
+      # ..................{ INSTALL                          }..................
+      # Install "pip"-based Python dependencies. Note that:
+      # * This command *MUST* be platform-agnostic by running under both:
+      #   * POSIX-compliant platforms (e.g., Linux, macOS).
+      #   * POSIX-noncompliant platforms (e.g., Windows).
+      #   In particular, commands that assume a POSIX-compliant shell (e.g.,
+      #   Bash) *MUST* be avoided.
+      # * Packaging dependencies (e.g., "pip") are upgraded *BEFORE* all
+      #   remaining dependencies (e.g., "tox").
+      # * Optional in-flight test-time dependencies (e.g., NumPy, mypy) are
+      #   intentionally listed in the "test" key of the
+      #   "[project.optional-dependencies]" section of the top-level
+      #   "pyproject.toml" file rather than below. "tox" isolates both the
+      #   package being tested and its dependency tree to virtual environments.
+      #   Listing in-flight dependencies here would install those dependencies
+      #   outside those virtual environments, thus reducing to a pointless,
+      #   expensive, and failure-prone noop.
+      - name: 'Upgrading packager dependencies...'
+        run: |
+          uv pip install --quiet --system --upgrade pip hatch wheel
+      - name: 'Installing package dependencies...'
+        run: |
+          uv pip install --quiet --system --upgrade tox
+
+      # ..................{ TYPE-CHECK                       }..................
+      # Type-check this package *BEFORE* testing this package. Why? Because
+      # "tox" internally creates a copy of this package residing at a temporary
+      # "build/lib/{package_name}" subdirectory. When type-checking this package
+      # *AFTER* testing this package, the existence of that subdirectory
+      # confuses mypy into believing that multiple duplicate copies of this
+      # package exist, which induces mypy to emit false positives, which induces
+      # this entire job and thus run to fail. In short, mypy.
+
+      # Type-check this package with "mypy".
+      - name: 'Type-checking package with "mypy"...'
+        run: |
+          # Manually install "mypy" in the standard way. Note that "mypy" itself
+          # requires the third-party "typing-extensions" package for support for
+          # backported type hint factories (e.g., the PEP 747-compliant
+          # "typing.TypeForm" hint factory under Python >= 3.14 backported as
+          # "typing_extensions.TypeForm" to prior Python versions). Ergo,
+          # "typing-extensions" need *NOT* be explicitly specified here.
+          uv pip install --quiet --system mypy
+          # Log this "mypy" version for debuggability.
+          python3 -m mypy --version
+          # Run this "mypy" instance against our main package.
+          python3 -m mypy ./beartype/
+
+      # ..................{ TEST                             }..................
+      - name: 'Testing package with "tox"...'
+        # Run the subsequent script as a Bash script. Although POSIX-compliant
+        # platforms (e.g., Linux, macOS) sensibly default to Bash, Windows
+        # insanely defaults to a Windows-specific shell (e.g., PowerShell).
+        shell: bash
+        run: |
+          # If the current platform is macOS, export a "tox"-specific
+          # environment variable circumventing "pip" installation issues by
+          # instructing "tox" to reinstall already installed Python packages.
+          # By default, "tox" avoids doing so for efficiency. This is required
+          # to specifically circumvent installation of NumPy under macOS. As
+          # discussed at numpy/numpy#15947, macOS bundles a patently broken
+          # BLAS replacement called "Accelerate" causing NumPy to raise
+          # exceptions on importation resembling:
+          #     RuntimeError: Polyfit sanity test emitted a warning, most
+          #     likely due to using a buggy Accelerate backend. If you compiled
+          #     yourself, more information is available at
+          #     https://numpy.org/doc/stable/user/building.html#accelerated-blas-lapack-libraries
+          #     Otherwise report this to the vendor that provided NumPy.
+          #     RankWarning: Polyfit may be poorly conditioned
+          #
+          # The kludge leveraged here is the canonical solution. See also:
+          #     https://github.com/numpy/numpy/issues/15947#issuecomment-745428684
+          #
+          # Ideally, we would instead isolate setting this environment variable
+          # in a prior step with sane GitHub Actions syntax: e.g.,
+          #     if: ${{ matrix.platform }} == 'macos-latest'
+          #     env:
+          #       _TOX_PIP_INSTALL_OPTIONS: '--force-reinstall'
+          #
+          # Sadly, the "env:" map only locally exports the environment
+          # variables it declares to the current step. Thanks, GitHub Actions.
+          if [[ ${{ matrix.platform }} == 'macos-latest' ]]; then
+              export _TOX_PIP_INSTALL_OPTIONS='--force-reinstall'
+              echo "Massaging macOS dependencies with \"pip install ${_TOX_PIP_INSTALL_OPTIONS}\"..."
+          fi
+          # Note that the "${TOXENV}" environment variable defined above
+          # confines this "tox" run to the "tox" environment defined by the
+          # current "tox-env" strategy matrix include. Dismantled, this is:
+          # * "--skip-missing-interpreters=false" disables the corresponding
+          #   "skip_missing_interpreters = true" setting globally enabled by
+          #   our top-level "tox.ini" configuration, forcing CI failures for
+          #   unavailable Python environments. See also:
+          #       https://github.com/tox-dev/tox/issues/903
+          python3 -m tox --skip-missing-interpreters=false
+
+      # ..................{ COVERAGE                         }..................
+      # Upload per-job coverage artifacts to be merged later by the "coverage"
+      # job. Each matrix job produces a uniquely named coverage data file
+      # (e.g., ".coverage.py310-coverage") that the "coverage" job combines
+      # into a single unified report before uploading to Codecov.
+      - name: 'Uploading coverage artifact...'
+        uses: 'actions/upload-artifact@v5'
+        with:
+          name: coverage-tests-${{ matrix.platform }}-${{ matrix.python-version }}
+          path: .coverage*
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ...................{ TEST DOOR                          }...................
+  # Job independently testing the "beartype.door" submodule with dedicated
+  # coverage measurement, providing isolated coverage data for this subpackage.
+  test_door:
+    # ..................{ SETTINGS                           }..................
+    name: "Test beartype.door submodule"
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    # ..................{ VARIABLES                          }..................
+    env:
+      PIP_NO_PIP_VERSION_CHECK: 1
+      PIP_PREFER_BINARY: 1
+      PYTHONFAULTHANDLER: 1
+      PYTHONUNBUFFERED: 1
+
+    # ..................{ PROCESS                            }..................
+    steps:
+      # ..................{ SETUP                            }..................
+      - name: 'Checking out repository...'
+        uses: 'actions/checkout@v6'
+      - name: 'Installing Python 3.13...'
+        uses: 'actions/setup-python@v6'
+        with:
+          python-version: "3.13"
+      - name: 'Installing uv...'
+        uses: 'astral-sh/setup-uv@v7'
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'pyproject.toml'
+      - name: 'Displaying Python metadata...'
+        run: |
+          python3 -VV
+          python3 -m site
+
+      # ..................{ INSTALL                          }..................
+      - name: 'Upgrading packager dependencies...'
+        run: |
+          uv pip install --quiet --system --upgrade pip hatch wheel
+      - name: 'Installing package and test dependencies...'
+        run: |
+          uv pip install --quiet --system .
+          uv pip install --quiet --system pytest pytest-cov coverage
+
+      # ..................{ TEST                             }..................
+      - name: 'Testing beartype.door...'
+        run: |
+          python3 -m pytest beartype/door/ -v --cov=beartype.door --cov-append --cov-report=xml
+
+      # ..................{ COVERAGE                         }..................
+      - name: 'Uploading coverage artifact...'
+        uses: 'actions/upload-artifact@v5'
+        with:
+          name: coverage-door
+          path: .coverage*
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ...................{ COVERAGE                           }...................
+  # Job merging all per-job coverage artifacts into a single unified coverage
+  # report and then uploading that report to Codecov. This job runs *AFTER* all
+  # "tests" matrix jobs and the "test_door" job have completed (regardless of
+  # whether any individual job succeeded or failed), ensuring all coverage data
+  # is collected and merged before the final Codecov upload.
+  coverage:
+    name: "Merge and upload coverage to Codecov"
+
+    runs-on: ubuntu-latest
+
+    # Do not run this job until *ALL* upstream jobs have completed.
+    needs:
+      - tests
+      - test_door
+
+    # Always run this job even if upstream jobs failed, so that partial coverage
+    # results are still uploaded to Codecov.
+    if: always()
+
+    timeout-minutes: 5
+
+    # ..................{ VARIABLES                          }..................
+    env:
+      PIP_NO_PIP_VERSION_CHECK: 1
+
+    # ..................{ PROCESS                            }..................
+    steps:
+      - name: 'Checking out repository...'
+        uses: 'actions/checkout@v6'
+      - name: 'Installing Python 3.13...'
+        uses: 'actions/setup-python@v6'
+        with:
+          python-version: "3.13"
+      - name: 'Installing uv...'
+        uses: 'astral-sh/setup-uv@v7'
+        with:
+          enable-cache: false
+
+      # ..................{ MERGE                            }..................
+      - name: 'Downloading coverage artifacts...'
+        uses: 'actions/download-artifact@v6'
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+
+      - name: 'Combining coverage data...'
+        run: |
+          uv pip install --quiet --system coverage
+          python3 -m coverage combine
+          python3 -m coverage xml
+          python3 -m coverage report --show-missing
+
+      # ..................{ UPLOAD                           }..................
+      - name: 'Publishing unified test coverage to Codecov...'
+        uses: 'codecov/codecov-action@v6'
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          fail_ci_if_error: false
