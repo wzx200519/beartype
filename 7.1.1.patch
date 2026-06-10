@@ -1,0 +1,281 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 00000000..0d17cc2a
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,272 @@
++---
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2025 Beartype authors.
++# See "LICENSE" for further details.
++#
++# --------------------( SYNOPSIS                           )--------------------
++# GitHub-specific continuous integration (CI) configuration, enabling the usual
++# GitHub Actions workflow for pure-Python packages exercised by "tox".
++
++name: tests
++
++# ....................{ TRIGGER                            }....................
++on:
++  push:
++    branches:
++      - main
++
++  pull_request:
++    branches:
++      - main
++
++  workflow_dispatch:
++
++# ....................{ PERMISSIONS                        }....................
++permissions:
++  contents: read
++
++# ....................{ MAIN                               }....................
++jobs:
++  # ...................{ TESTS                              }...................
++  tests:
++    strategy:
++      fail-fast: false
++      matrix:
++        platform: [ubuntu-latest, windows-latest, macos-latest]
++
++        #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++        # WARNING: Changes to this section *MUST* be manually synchronized with:
++        # * The "envlist" setting of the "[tox]" subsection in "tox.ini".
++        # * The "include" setting below.
++        #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++
++        # List of all "tox" environments (defined by the "envlist" setting of
++        # the "[tox]" subsection in "tox.ini") to be tested, which the
++        # ${TOXENV} environment variable declared below exposes to "tox".
++        tox-env:
++          - py39-coverage
++          - py310-coverage
++          - py311-coverage
++          - py312-coverage
++          - py313-coverage
++
++        # Map each "tox" environment name listed in the "tox-env" list above to
++        # the corresponding "python-version" string supported by the
++        # "actions/setup-python" GitHub Action run below. Note that:
++        # * Python version specifiers *MUST* be quoted: e.g.,
++        #     python-version: "3.10"
++        #   Why? Because YAML sensibly treats an unquoted literal satisfying
++        #   floating-point syntax as a floating-point number and thus silently
++        #   truncates *ALL* ignorable zeroes suffixing that number (e.g.,
++        #   truncating 3.10 to 3.1). That then results in non-human-readable CI
++        #   errors.
++        include:
++          - { python-version: "3.9",  tox-env: "py39-coverage" }
++          - { python-version: "3.10", tox-env: "py310-coverage" }
++          - { python-version: "3.11", tox-env: "py311-coverage" }
++          - { python-version: "3.12", tox-env: "py312-coverage" }
++          - { python-version: "3.13", tox-env: "py313-coverage" }
++
++    name: "[${{ matrix.platform }}] Python ${{ matrix.python-version }} CI"
++    runs-on: "${{ matrix.platform }}"
++    timeout-minutes: 20
++
++    env:
++      PIP_NO_PIP_VERSION_CHECK: 1
++      PIP_PREFER_BINARY: 1
++      PYTHONFAULTHANDLER: 1
++      PYTHONUNBUFFERED: 1
++      TOXENV: "${{ matrix.tox-env }}"
++
++    steps:
++      - name: 'Checking out repository...'
++        uses: 'actions/checkout@v6'
++      - name: "Installing Python ${{ matrix.python-version }}..."
++        uses: 'actions/setup-python@v6'
++        with:
++          python-version: "${{ matrix.python-version }}"
++          allow-prereleases: true
++      - name: 'Installing uv...'
++        uses: 'astral-sh/setup-uv@v7'
++        with:
++          enable-cache: true
++          cache-dependency-glob: 'pyproject.toml'
++      - name: 'Displaying Python metadata...'
++        run: |
++          python3 -VV
++          python3 -m site
++          python3 -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
++
++      - name: 'Upgrading packager dependencies...'
++        run: |
++          uv pip install --quiet --system --upgrade pip hatch wheel
++      - name: 'Installing package dependencies...'
++        run: |
++          uv pip install --quiet --system --upgrade tox
++
++      - name: 'Type-checking package with "mypy"...'
++        run: |
++          uv pip install --quiet --system mypy
++          python3 -m mypy --version
++          python3 -m mypy ./beartype/
++
++      - name: 'Testing package with "tox"...'
++        shell: bash
++        run: |
++          if [[ ${{ matrix.platform }} == 'macos-latest' ]]; then
++              export _TOX_PIP_INSTALL_OPTIONS='--force-reinstall'
++              echo "Massaging macOS dependencies with \"pip install ${_TOX_PIP_INSTALL_OPTIONS}\"..."
++          fi
++          python3 -m tox --skip-missing-interpreters=false
++
++      # Persist coverage data so that the downstream "coverage" job can merge
++      # the coverage produced by *EVERY* matrix entry and also by the
++      # "test_door" job into a single combined Codecov upload.
++      - name: 'Preserving coverage data (matrix)...'
++        if: always()
++        uses: 'actions/upload-artifact@v6'
++        with:
++          name: "coverage-tests-${{ matrix.platform }}-${{ matrix.python-version }}"
++          path: |
++            .coverage
++            .coverage.*
++            coverage.xml
++          if-no-files-found: ignore
++          retention-days: 7
++
++  # ...................{ TESTS ~ door                       }...................
++  # Job running the "beartype.door" submodule test suite in isolation and
++  # appending the resulting coverage data to the combined coverage report
++  # collected by the final "coverage" job.
++  test_door:
++    name: "Python 3.12 beartype.door tests"
++    runs-on: ubuntu-latest
++    timeout-minutes: 20
++
++    env:
++      PIP_NO_PIP_VERSION_CHECK: 1
++      PIP_PREFER_BINARY: 1
++      PYTHONFAULTHANDLER: 1
++      PYTHONUNBUFFERED: 1
++
++    steps:
++      - name: 'Checking out repository...'
++        uses: 'actions/checkout@v6'
++      - name: 'Installing Python 3.12...'
++        uses: 'actions/setup-python@v6'
++        with:
++          python-version: "3.12"
++      - name: 'Installing uv...'
++        uses: 'astral-sh/setup-uv@v7'
++        with:
++          enable-cache: true
++          cache-dependency-glob: 'pyproject.toml'
++
++      - name: 'Installing test dependencies...'
++        run: |
++          uv pip install --quiet --system --upgrade pip pytest pytest-cov coverage
++          uv pip install --quiet --system -e .[test]
++
++      # Run the "beartype.door" submodule test suite in isolation with
++      # "pytest-cov". "--cov-append" appends to any pre-existing ".coverage"
++      # data so that multiple submodule runs can later be combined with the
++      # main test matrix data.
++      - name: 'Running beartype.door tests with coverage...'
++        run: |
++          python3 -m pytest beartype/door/ -v --cov=beartype.door --cov-append --cov-report=term-missing --cov-report=xml:coverage-door.xml
++
++      # Persist this job's coverage data for merging in the "coverage" job.
++      - name: 'Preserving coverage data (door)...'
++        if: always()
++        uses: 'actions/upload-artifact@v6'
++        with:
++          name: "coverage-door"
++          path: |
++            .coverage
++            .coverage.*
++            coverage-door.xml
++          if-no-files-found: ignore
++          retention-days: 7
++
++  # ...................{ COVERAGE                           }...................
++  # Job aggregating *ALL* coverage artifacts produced by the "tests" matrix
++  # and the "test_door" job into a single combined coverage report, then
++  # uploading that combined report to Codecov once.
++  coverage:
++    name: "Upload combined coverage to Codecov"
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++
++    # Aggregation only makes sense after every coverage-producing job has
++    # finished; Codecov will then merge the single upload across all of those
++    # runs on the server side.
++    needs:
++      - tests
++      - test_door
++
++    # Don't fail the whole workflow simply because coverage upload is
++    # transiently broken.
++    continue-on-error: true
++
++    steps:
++      - name: 'Checking out repository...'
++        uses: 'actions/checkout@v6'
++      - name: 'Installing Python...'
++        uses: 'actions/setup-python@v6'
++        with:
++          python-version: "3.12"
++      - name: 'Installing coverage tooling...'
++        run: |
++          python3 -m pip install --quiet --upgrade coverage
++
++      # Download every coverage artifact produced above. Each artifact is
++      # extracted into its own subdirectory to avoid clobbering identically
++      # named ".coverage" / "coverage.xml" files emitted by different matrix
++      # entries or by the "test_door" job.
++      - name: 'Downloading all coverage artifacts...'
++        uses: 'actions/download-artifact@v6'
++        with:
++          path: coverage-artifacts
++
++      - name: 'Inspecting downloaded coverage artifacts...'
++        run: |
++          ls -la coverage-artifacts/ || true
++          find coverage-artifacts -type f | head -n 100 || true
++
++      # Merge every downloaded Coverage.py SQLite database into a single
++      # ".coverage" database, then emit a combined "coverage.xml" report that
++      # Codecov's uploader understands natively. Any coverage XML reports
++      # (e.g. the one emitted by "test_door") are picked up by the Codecov
++      # uploader automatically via its globbing behaviour.
++      - name: 'Combining coverage data and writing coverage.xml...'
++        shell: bash
++        run: |
++          shopt -s nullglob
++          declare -a COV_FILES=()
++          while IFS= read -r -d '' f; do
++              COV_FILES+=("$f")
++          done < <(find coverage-artifacts \( -name '.coverage' -o -name '.coverage.*' \) -print0)
++
++          if (( ${#COV_FILES[@]} > 0 )); then
++              echo "Combining ${#COV_FILES[@]} coverage file(s)..."
++              python3 -m coverage combine "${COV_FILES[@]}"
++              python3 -m coverage xml -o coverage.xml
++              python3 -m coverage report
++          else
++              echo "No coverage data files found; skipping combine."
++          fi
++
++      # Upload the combined coverage report *and* any XML reports left behind
++      # by "test_door" in a single Codecov upload. Because we use "files:" as
++      # a comma-separated list of specific coverage files rather than relying
++      # on the action's recursive discovery, we guarantee that every
++      # submodule's contribution is merged into one Codecov report for this
++      # workflow run.
++      - name: 'Uploading combined coverage to Codecov...'
++        uses: 'codecov/codecov-action@v6'
++        with:
++          files: ./coverage.xml
++          flags: unittests
++          token: ${{ secrets.CODECOV_TOKEN }}
++          verbose: true
++          fail_ci_if_error: false
+diff --git a/7.7.1.patch b/7.7.1.patch
+new file mode 100644
+index 00000000..e69de29b
