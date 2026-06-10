@@ -1,0 +1,145 @@
+diff --git a/7.5.3.patch b/7.5.3.patch
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/beartype/beartype_test/test_vale.py b/beartype/beartype_test/test_vale.py
+new file mode 100644
+index 00000000..fddec756
+--- /dev/null
++++ b/beartype/beartype_test/test_vale.py
+@@ -0,0 +1,47 @@
++import pytest
++import timeit
++from typing import Annotated
++from beartype import beartype
++from beartype.vale import Is
++
++class TestIsPerformance:
++    """
++    Performance regression tests for beartype.vale.Is custom validators.
++    """
++
++    def test_is_performance_vs_native(self, benchmark):
++        """
++        Compare the overhead of Is[lambda x: x > 0] vs a normal int check.
++        Requires the custom validator execution time to not exceed 2x the normal check.
++        """
++        # 普通 int 类型的检查函数
++        @beartype
++        def native_check(x: int) -> int:
++            return x
++
++        # Is[lambda x: x > 0] 自定义校验器的检查函数
++        @beartype
++        def custom_check(x: Annotated[int, Is[lambda x: x > 0]]) -> int:
++            return x
++
++        # 预热 (Warmup)
++        native_check(42)
++        custom_check(42)
++
++        # 使用 pytest-benchmark 测量 custom_check 的执行时间
++        benchmark(custom_check, 42)
++
++        # 获取 custom_check 的平均执行时间 (秒)
++        # pytest-benchmark 默认会记录这些统计数据
++        custom_time = benchmark.stats.stats.mean
++
++        # 测量普通 native_check 的执行时间 (秒)
++        # 由于 benchmark fixture 只能测量一个函数，我们使用 timeit 来获取基准时间
++        native_time = timeit.timeit(
++            "native_check(42)",
++            globals={"native_check": native_check},
++            number=100000
++        ) / 100000
++
++        # 要求校验器执行时间不超过普通检查的 2 倍
++        assert custom_time <= native_time * 2
+diff --git a/beartype_test/test_vale.py b/beartype_test/test_vale.py
+new file mode 100644
+index 00000000..fddec756
+--- /dev/null
++++ b/beartype_test/test_vale.py
+@@ -0,0 +1,47 @@
++import pytest
++import timeit
++from typing import Annotated
++from beartype import beartype
++from beartype.vale import Is
++
++class TestIsPerformance:
++    """
++    Performance regression tests for beartype.vale.Is custom validators.
++    """
++
++    def test_is_performance_vs_native(self, benchmark):
++        """
++        Compare the overhead of Is[lambda x: x > 0] vs a normal int check.
++        Requires the custom validator execution time to not exceed 2x the normal check.
++        """
++        # 普通 int 类型的检查函数
++        @beartype
++        def native_check(x: int) -> int:
++            return x
++
++        # Is[lambda x: x > 0] 自定义校验器的检查函数
++        @beartype
++        def custom_check(x: Annotated[int, Is[lambda x: x > 0]]) -> int:
++            return x
++
++        # 预热 (Warmup)
++        native_check(42)
++        custom_check(42)
++
++        # 使用 pytest-benchmark 测量 custom_check 的执行时间
++        benchmark(custom_check, 42)
++
++        # 获取 custom_check 的平均执行时间 (秒)
++        # pytest-benchmark 默认会记录这些统计数据
++        custom_time = benchmark.stats.stats.mean
++
++        # 测量普通 native_check 的执行时间 (秒)
++        # 由于 benchmark fixture 只能测量一个函数，我们使用 timeit 来获取基准时间
++        native_time = timeit.timeit(
++            "native_check(42)",
++            globals={"native_check": native_check},
++            number=100000
++        ) / 100000
++
++        # 要求校验器执行时间不超过普通检查的 2 倍
++        assert custom_time <= native_time * 2
+diff --git a/test_bench_tmp.py b/test_bench_tmp.py
+new file mode 100644
+index 00000000..0b8a6027
+--- /dev/null
++++ b/test_bench_tmp.py
+@@ -0,0 +1,7 @@
++import pytest
++def test_bench(benchmark):
++    def f(): pass
++    benchmark(f)
++    print(benchmark.stats)
++    print(dir(benchmark.stats))
++    print(benchmark.stats.stats.mean)
+diff --git a/test_perf.py b/test_perf.py
+new file mode 100644
+index 00000000..34dda963
+--- /dev/null
++++ b/test_perf.py
+@@ -0,0 +1,17 @@
++import timeit
++from beartype.vale import Is
++
++is_positive = Is[lambda x: x > 0]
++
++def normal_check():
++    return isinstance(1, int)
++
++def custom_check():
++    return is_positive.is_valid(1)
++
++normal_time = timeit.timeit(normal_check, number=1000000) / 1000000
++custom_time = timeit.timeit(custom_check, number=1000000) / 1000000
++
++print(f"Normal: {normal_time * 1e9:.2f} ns")
++print(f"Custom: {custom_time * 1e9:.2f} ns")
++print(f"Ratio: {custom_time / normal_time:.2f}x")
