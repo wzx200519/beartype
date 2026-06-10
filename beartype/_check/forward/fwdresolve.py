@@ -451,6 +451,86 @@ def resolve_hint_pep484_ref_str_decor_meta(
 
 # ....................{ PRIVATE ~ resolvers                }....................
 #FIXME: Unit test us up, please.
+def _expand_type_alias(
+    # Mandatory parameters.
+    hint: Hint,
+
+    # Optional parameters.
+    seen: set[int] | None = None,
+) -> Hint:
+    '''
+    Recursively expand the passed type hint to resolve all nested :pep:`695`-compliant
+    **type aliases** (i.e., objects created via the ``type`` statement under Python >= 3.12)
+    to their underlying type hints.
+
+    This function safely handles self-referential type aliases (e.g., ``type Node = int | list[Node]``)
+    by tracking visited ``TypeAliasType`` objects in a ``seen`` set to prevent infinite recursion.
+
+    This expander is intentionally *not* memoized, as the recursion guard requires
+    maintaining state across recursive calls.
+
+    Parameters
+    ----------
+    hint : Hint
+        Type hint to be expanded. This may be a ``TypeAliasType`` or any type hint
+        that may contain nested ``TypeAliasType`` objects.
+    seen : set[int], default: None
+        Set of ``id()`` values of ``TypeAliasType`` objects already visited during
+        the current expansion chain. Defaults to an empty set.
+
+    Returns
+    -------
+    Hint
+        The fully expanded type hint with all ``TypeAliasType`` objects resolved to
+        their underlying types. Self-referential aliases are preserved as-is to
+        prevent infinite recursion.
+
+    Examples
+    --------
+    >>> # Self-referential alias
+    >>> type Node = int | list[Node]
+    >>> _expand_type_alias(Node)
+    int | list[Node]  # Node is preserved to prevent infinite recursion
+
+    >>> # Non-recursive alias
+    >>> type MyInt = int
+    >>> _expand_type_alias(MyInt)
+    int
+    '''
+    # Avoid circular import dependencies.
+    from beartype._cave._cavefast import HintPep695TypeAlias
+
+    # Initialize the seen set if this is the first call in the expansion chain.
+    if seen is None:
+        seen = set()
+
+    # If this hint is not a TypeAliasType, return it as-is.
+    if not isinstance(hint, HintPep695TypeAlias):
+        return hint
+
+    # Get the unique identifier of this TypeAliasType.
+    hint_id = id(hint)
+
+    # If we've already visited this TypeAliasType, we've detected a self-reference.
+    # Return the alias as-is to prevent infinite recursion.
+    if hint_id in seen:
+        return hint
+
+    # Mark this TypeAliasType as visited.
+    seen.add(hint_id)
+
+    # Get the underlying value of this type alias.
+    # Note: hint.__value__ may itself be another TypeAliasType or a composite type.
+    aliased_value = hint.__value__
+
+    # Recursively expand the aliased value.
+    expanded_value = _expand_type_alias(aliased_value, seen)
+
+    # Return the expanded value.
+    return expanded_value
+
+
+#FIXME: Unit test us up, please.
 def _resolve_hint_pep484_ref_str(
     # Mandatory parameters.
     hint: str,
