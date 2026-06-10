@@ -1,0 +1,95 @@
+diff --git a/7.5.1.patch b/7.5.1.patch
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/beartype_test/test_vale.py b/beartype_test/test_vale.py
+new file mode 100644
+index 00000000..ae947c16
+--- /dev/null
++++ b/beartype_test/test_vale.py
+@@ -0,0 +1,86 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++**Beartype validator performance regression tests.**
++
++This submodule exercises :class:`beartype.vale.Is` custom validators under
++:mod:`pytest-benchmark` to guard against performance regressions relative to
++plain ``isinstance`` checks.
++'''
++
++# ....................{ IMPORTS                            }....................
++#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++# WARNING: To raise human-readable test errors, avoid importing from
++# package-specific submodules at module scope.
++#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
++
++# ....................{ TESTS ~ class : is                 }....................
++class TestIsPerformance(object):
++    '''
++    **Beartype** :class:`beartype.vale.Is` **performance regression test
++    class.**
++
++    This class compares the runtime cost of invoking a
++    :class:`beartype.vale.Is`-based validator against that of performing an
++    equivalent plain ``isinstance``-or-comparison check. The validator must
++    remain no worse than ~2x as slow as the plain check; anything larger
++    signals an unintentional performance regression in the
++    :mod:`beartype.vale` subsystem.
++    '''
++
++    # ....................{ CONSTANTS                      }....................
++    MAX_SLOWDOWN_RATIO = 2.0
++    '''
++    Maximum acceptable ratio of ``Is[lambda x: x > 0]`` execution time to the
++    execution time of an equivalent plain ``int`` check.
++    '''
++
++    # ....................{ TESTS                          }....................
++    def test_is_performance(self, benchmark) -> None:
++        '''
++        Benchmark :class:`beartype.vale.Is` with a trivial predicate against a
++        plain ``int`` type check, asserting the former is not dramatically
++        slower.
++
++        Parameters
++        ----------
++        benchmark : pytest_benchmark.fixture.BenchmarkFixture
++            The :mod:`pytest-benchmark` ``benchmark`` fixture, injected by the
++            ``pytest_benchmark`` plugin registered in the project-wide
++            ``conftest.py``.
++        '''
++
++        # Defer test-specific imports.
++        from beartype.vale import Is
++
++        # Validator to be benchmarked.
++        is_positive = Is[lambda x: x > 0]
++
++        # Representative input known to satisfy both checks.
++        test_value = 42
++
++        # Benchmark the "Is" validator and a plain equivalent check. Both
++        # warmups are handled automatically by ``pytest-benchmark``.
++        is_stats = benchmark(lambda: is_positive(test_value))
++        plain_stats = benchmark(lambda: isinstance(test_value, int) and test_value > 0)
++
++        # Extract median execution times reported by ``pytest-benchmark``. The
++        # median is preferred over the mean here, as it is robust against the
++        # occasional outliers that plague micro-benchmarks.
++        is_median = is_stats.stats['median']
++        plain_median = plain_stats.stats['median']
++
++        # Avoid division by zero on noisy platforms that report zero time for
++        # the plain check.
++        ratio = is_median / plain_median if plain_median > 0 else self.MAX_SLOWDOWN_RATIO
++
++        # Assert the slowdown introduced by ``Is`` remains within budget.
++        assert ratio <= self.MAX_SLOWDOWN_RATIO, (
++            f'Is[lambda x: x > 0] median {is_median * 1e9:.2f} ns / '
++            f'plain int check median {plain_median * 1e9:.2f} ns = '
++            f'{ratio:.2f}x slowdown exceeds allowed '
++            f'{self.MAX_SLOWDOWN_RATIO}x'
++        )
