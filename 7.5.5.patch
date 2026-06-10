@@ -1,0 +1,129 @@
+diff --git a/beartype_test/test_vale.py b/beartype_test/test_vale.py
+new file mode 100644
+index 00000000..d856681a
+--- /dev/null
++++ b/beartype_test/test_vale.py
+@@ -0,0 +1,123 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++**Beartype :class:`beartype.vale.Is` performance regression tests.**
++
++This submodule benchmarks the runtime overhead of
++:pep:`593`-compliant :attr:`beartype.vale.Is` custom validators against plain
++type checks, ensuring that the validator does not regress beyond an acceptable
++performance envelope.
++'''
++
++# ....................{ IMPORTS                            }....................
++from timeit import timeit
++
++from beartype import beartype
++from beartype.vale import Is
++from beartype.typing import Annotated
++from pytest import mark
++
++
++class TestIsPerformance:
++    '''
++    Performance regression tests comparing the runtime overhead of
++    :class:`beartype.vale.Is` custom validators against plain builtin type
++    checks when applied via :func:`beartype.beartype`.
++    '''
++
++    # ..................{ CONSTANTS                          }..................
++    _NUMBER = 100_000
++    '''
++    Number of repetitions each :func:`timeit.timeit` call performs.
++
++    This value is intentionally large enough to smooth out measurement noise
++    while keeping total wall-clock time reasonable.
++    '''
++
++    _MAX_OVERHEAD_FACTOR = 2.0
++    '''
++    Maximum acceptable ratio of ``Is[...]`` call time to plain ``int`` call
++    time.  If the ratio exceeds this value the regression test fails.
++    '''
++
++    # ..................{ FIXTURES                           }..................
++    @staticmethod
++    def _make_plain_int_check():
++        '''
++        Create and return a :func:`beartype.beartype`-decorated callable that
++        only checks a plain ``int`` parameter, serving as the baseline.
++        '''
++
++        @beartype
++        def _accepts_int(n: int) -> int:
++            return n
++
++        return _accepts_int
++
++    @staticmethod
++    def _make_is_validator_check():
++        '''
++        Create and return a :func:`beartype.beartype`-decorated callable that
++        checks an ``Annotated[int, Is[...]]`` parameter, exercising the
++        :class:`beartype.vale.Is` validator path.
++        '''
++
++        PositiveInt = Annotated[int, Is[lambda x: x > 0]]
++
++        @beartype
++        def _accepts_positive_int(n: PositiveInt) -> int:
++            return n
++
++        return _accepts_positive_int
++
++    # ..................{ BENCHMARKS                         }..................
++    @mark.benchmark(group='vale_Is_vs_int')
++    def test_benchmark_plain_int(self, benchmark) -> None:
++        '''
++        Benchmark a plain ``int`` type check decorated by
++        :func:`beartype.beartype`, establishing the baseline cost.
++        '''
++
++        func = self._make_plain_int_check()
++        benchmark(func, 42)
++
++    @mark.benchmark(group='vale_Is_vs_int')
++    def test_benchmark_is_validator(self, benchmark) -> None:
++        '''
++        Benchmark an ``Annotated[int, Is[lambda x: x > 0]]`` type check
++        decorated by :func:`beartype.beartype`, measuring the additional
++        overhead introduced by the :class:`beartype.vale.Is` validator.
++        '''
++
++        func = self._make_is_validator_check()
++        benchmark(func, 42)
++
++    # ..................{ REGRESSION                         }..................
++    def test_is_overhead_within_two_x(self) -> None:
++        '''
++        Assert that the per-call overhead of an
++        ``Annotated[int, Is[lambda x: x > 0]]`` check does not exceed twice
++        the cost of a plain ``int`` check.
++
++        This test uses :func:`timeit.timeit` to measure both paths and
++        compares their total timings, failing if the validator path is more
++        than 2× slower than the plain type check.
++        '''
++
++        plain_func = self._make_plain_int_check()
++        is_func = self._make_is_validator_check()
++
++        plain_time = timeit('plain_func(42)', globals=locals(),
++                            number=self._NUMBER)
++        is_time = timeit('is_func(42)', globals=locals(),
++                         number=self._NUMBER)
++
++        ratio = is_time / plain_time
++        assert ratio <= self._MAX_OVERHEAD_FACTOR, (
++            f'Is[lambda x: x > 0] overhead too high: '
++            f'{is_time:.6f}s > {self._MAX_OVERHEAD_FACTOR}×{plain_time:.6f}s '
++            f'(ratio: {ratio:.2f}×)'
++        )
