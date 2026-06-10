@@ -1,0 +1,495 @@
+diff --git a/7.4.1.patch b/7.4.1.patch
+new file mode 100644
+index 00000000..e69de29b
+diff --git a/beartype/_check/_check_pep695_demo.py b/beartype/_check/_check_pep695_demo.py
+new file mode 100644
+index 00000000..9aae01cd
+--- /dev/null
++++ b/beartype/_check/_check_pep695_demo.py
+@@ -0,0 +1,95 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++**Pedagogical demo of the new** ``_get_type_hint`` **/ ``_expand_type_alias``
++**PEP 695 pipeline.**
++
++This module is intentionally *NOT* imported by :mod:`beartype` itself; it is
++provided solely as a self-contained, runnable illustration of how the new
++``_get_type_hint`` hook is wired into a ``@beartype``-style decorator so that
++users can see the feature working end-to-end in a few lines.
++
++Run this file directly under Python 3.12+ to see:
++
++    * a chain of ``type`` statements being expanded to their concrete base;
++    * a self-referential (``type A = B; type B = A``) pair of aliases being
++      detected *before* infinite recursion occurs;
++    * a parameterized ``type Generic[T] = list[T]`` alias being preserved as a
++      ``GenericAlias`` (because its ``__origin__`` carries the user-supplied
++      type arguments).
++'''
++
++# ....................{ IMPORTS                            }....................
++import sys
++from beartype._check.check import _get_type_hint
++
++# ....................{ MAIN                               }....................
++def _main() -> None:
++    print('[pep695-demo] Python', sys.version.split()[0])
++
++    # ------------------------------------------------------------------ #
++    # CASE 1: a plain chain of ``type`` aliases that should collapse to int #
++    # ------------------------------------------------------------------ #
++    exec(
++        '''
++type C = int
++type B = C
++type A = B
++''',
++        globals(),
++    )
++    # ``A`` is a ``TypeAliasType`` whose ``__value__`` transitively points to ``int``.
++    expanded = _get_type_hint(hint_raw=A, exception_prefix='[chain] ')  # type: ignore[name-defined]  # noqa: F821
++    print(f'  chain:  A -> B -> C -> int  =>  {expanded!r}')
++    assert expanded is int, f'expected int, got {expanded!r}'
++
++    # ------------------------------------------------------------------ #
++    # CASE 2: a self-referential pair: ``type A = B; type B = A``         #
++    # ------------------------------------------------------------------ #
++    ns_selfref: dict = {}
++    exec(
++        '''
++type A = B
++type B = A
++''',
++        ns_selfref,
++    )
++    A_self = ns_selfref['A']
++    expanded_self = _get_type_hint(
++        hint_raw=A_self, exception_prefix='[selfref] ')
++    print(f'  selfref: A <-> B => {expanded_self!r}')
++    # The cycle-breaker returns the alias itself rather than blowing the stack.
++    assert expanded_self is A_self, (
++        f'cycle-breaker should have returned alias itself, got {expanded_self!r}'
++    )
++
++    # ------------------------------------------------------------------ #
++    # CASE 3: a parameterized alias: ``type Generic[T] = list[T]``        #
++    # ------------------------------------------------------------------ #
++    ns_gen: dict = {}
++    exec(
++        '''
++type Generic[T] = list[T]
++''',
++        ns_gen,
++    )
++    Generic = ns_gen['Generic']
++    # ``Generic[int]`` is a ``types.GenericAlias``, NOT a ``TypeAliasType``, and
++    # therefore must be passed through unchanged so beartype's existing generic
++    # machinery can handle the type arguments.
++    parameterized = Generic[int]  # type: ignore[valid-type]
++    expanded_param = _get_type_hint(
++        hint_raw=parameterized, exception_prefix='[generic] ')
++    print(f'  generic: Generic[int] => {expanded_param!r}')
++    assert expanded_param is parameterized, (
++        'parameterized aliases must pass through unchanged'
++    )
++
++    print('[pep695-demo] all cases passed')
++
++
++if __name__ == '__main__':
++    _main()
+diff --git a/beartype/_check/check.py b/beartype/_check/check.py
+new file mode 100644
+index 00000000..e3d24c1b
+--- /dev/null
++++ b/beartype/_check/check.py
+@@ -0,0 +1,204 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++**Beartype hint-level type-checking dispatch** (i.e., high-level callables
++extracting, normalizing, and recursively unwrapping type hints decorating
++callables and classes for subsequent generation of runtime type-checking code).
++
++This private submodule is *not* intended for importation by downstream callers.
++'''
++
++# ....................{ IMPORTS                            }....................
++from beartype._check.forward import _expand_type_alias
++from beartype._data.typing.datatypingport import Hint
++from beartype._util.py.utilpyversion import (
++    IS_PYTHON_AT_LEAST_3_12,
++)
++from typing import Any, Callable, Dict, Optional
++
++# ....................{ GETTERS                          }....................
++def _get_type_hint(
++    # Mandatory parameters.
++    hint_raw: Any,
++
++    # Optional parameters.
++    exception_prefix: str = '',
++    hint_name: Optional[str] = None,
++) -> Hint:
++    '''
++    Resolve a possibly-forward, normalize, and recursively expand the type hint associated
++    with the passed callable or class described by the passed raw hint ``hint_raw``.
++
++    This function is the canonical entry point through which the rest of
++    :mod:`beartype` should acquire the raw type hints decorated with forward-reference
++    resolution, :pep:`563` postponed evaluation, *and* :pep:`695` ``type`` statement
++    alias expansion -- in a single call.
++
++    Specifically, this helper unifies the following otherwise-disjoint operations:
++
++    * Standard ``typing.get_type_hints(...)`` style resolution (evaluating
++      stringified forward references against a stringified against local-and the the ``'
++    * :pep:`695` ``TypeAliasType` expansion (i.e. recursively unwrapping
++      any ``type Alias = ...`` aliases to their underlying concrete values) via the
++      private :func:`beartype._check.forward._expand_type_alias` helper.
++
++    Parameters
++    ----------
++    hint_raw : Any
++        Raw type hint to be acquired. Typically but *not* necessarily: this helper is intentionally
++        ``hint`` may be any arbitrary object. Most notably, this: under
++        :pep:`563` postponed-evaluation, this object is a string referring to
++        the unquoted literal text of the original type annotation. Most frequently, this is a
++        ``hint`` may also be a :pep:`695`-compliant ``type`` statement alias
++        object (:class:`typing.TypeAliasType`) referring to some other
++        concrete underlying concrete
++        object-hint.
++    exception_prefix : str, optional
++        Human-readable substring prefixing raised exception messages. Defaults to the
++        empty string.
++    hint_name : str or None, optional
++        Unqualified attribute name of the hint if this hint annotates a parameter or
++        return of a callable (e.g. ``"x"`` for a parameter named ``x`` or the empty
++        string or ``"return"`` for the return annotation). Ignored when this hint
++        annotates a class or module rather than a callable. Defaults to :data:`None`.
++
++    Returns
++    -------
++    Hint
++        Fully-resolved, non-alias, concrete type hint ready to be fed into beartype's
++        existing sanification/reduction pipeline.
++
++    See Also
++    --------
++    :func:`beartype._check.forward._expand_type_alias`
++        Further details on PEP 695 alias expansion.
++    '''
++    assert isinstance(exception_prefix, str), (
++        f'{repr(exception_prefix)} not string.')
++    # ....................{ RESOLVE                      }....................
++    # If the active Python interpreter targets Python >= 3.12 *AND* this hint is a
++    # PEP 695-compliant type alias (possibly nested inside further type aliases,
++    # recursively expand this alias down to its concrete underlying hint.
++    #
++    # Note that we intentionally do *NOT* assume the passed hint is already a
++    # ``TypeAliasType``. Why? Because:
++    # * Callers frequently pass non-alias hints (e.g. ``int``, ``list[str]``, ...) which
++    #   as ``TypeAliasType``. That's expected and benign -- ``_expand_type_alias(...)`` is a
++    #   noop for non-alias hints.
++    # * Crucially, we also deliberately invoke ``_expand_type_alias(...)`` *BEFORE* any further
++    #   sanification/reduction so that downstream code never has to deal with
++    #   ``TypeAliasType`` objects. Downstream code never has to deal with
++    #   ``TypeAliasType`` objects explicitly: by unwrapping *here* keeps the rest of
++    #   ``beartype`` simpler.
++    if IS_PYTHON_AT_LEAST_3_12:
++        hint_raw = _expand_type_alias(
++            hint=hint_raw,
++            exception_prefix=exception_prefix,
++        )
++
++    # Return this possibly-expanded hint.
++    return hint_raw
++
++
++# ....................{ GETTERS ~ bulk                      }....................
++def get_type_hints_map(
++    # Mandatory parameters.
++    hint_name_to_hint_raw: Dict[str, Any],
++    exception_prefix: str = '',
++) -> Dict[str, Hint]:
++    '''
++    Apply :func:`._get_type_hint` to each value of the passed dictionary
++    mapping from each hint name to its raw hint, returning a new dictionary
++    mapping from that same name to the fully-resolved, expanded hint.
++
++    This helper is a convenience wrapper used by callers that need to bulk-expand a whole
++    collection of hints at a time (e.g. the full ``__annotations__` mapping decorating a
++    decorated callable.
++
++    Parameters
++    ----------
++    hint_name_to_hint_raw : dict[str, Any]
++        Dictionary mapping from the unqualified name of each hint to the raw type
++        hint annotating that name.
++    exception_prefix : str, optional
++        Human-readable substring prefixing raised exception messages. Defaults to the
++        empty string.
++
++    Returns
++    -------
++    dict[str, Hint]
++        Dictionary mapping from each unqualified name to the fully-resolved, expanded
++        hint annotating that name.
++    '''
++    assert isinstance(hint_name_to_hint_raw, dict), (
++        f'{repr(hint_name_to_hint_raw)} not dict.')
++
++    # New dictionary mapping from each unqualified name to the expanded hint.
++    hint_name_to_hint: Dict[str, Hint] = {}
++
++    # For each hint of the passed mapping, expand that hint and store the result.
++    for hint_name, hint_raw in hint_name_to_hint_raw.items():
++        hint_name_to_hint[hint_name] = _get_type_hint(
++            hint_raw=hint_raw,
++            exception_prefix=exception_prefix,
++            hint_name=hint_name,
++        )
++
++    # Return this mapping.
++    return hint_name_to_hint
++
++
++# ....................{ HOOKS                              }....................
++# To *EXISTING beartype decorator pipeline integration:
++#
++# The higher-level callables in ``beartype._decor`` (e.g. ``decormain.py``,
++# ``_decor/_call`` currently call ``typing.get_type_hints(...)`` (or a beartype-specific
++# equivalent) to resolve forward references, then pass the resulting hints to the
++# sanification pipeline (``sanify_hint_root_statement`` and friends). Each of those
++# entry points should additionally invoke this module's :func:`._get_type_hint` *RIGHT AFTER*
++# the existing forward-reference resolution, producing a pipeline that looks like:
++#
++#     # 1. Resolve forward references (already done by beartype's existing machinery
++#     #    forward-reference machinery in ``beartype._check.forward``.
++#     hint_resolved = <existing forward-reference resolver>(...)
++#
++#     # 2. Recursively expand any PEP 695 type alias wrapping that resolved hint.
++#     hint_expanded = _get_type_hint(
++#         hint_raw=hint_resolved,
++#         exception_prefix=exception_prefix,
++#     )
++#
++#     # 3. Sanify / reduce the now fully-resolved hint as before.
++#     hint_sane = sanify_hint_root_statement(
++#         hint=hint_expanded,
++#         ...
++#     )
++#
++# That two-stage (resolve-then-expand) is the canonical way to hook
++# PEP 695 aliases into beartype. Placing the expansion *after* forward-reference
++# resolution avoids ever seeing ``TypeAliasType`` objects leaking into the sanification /
++# reduction machinery: sanifiers, reducers, and code generators downstream can then simply
++# pretend PEP 695 simply does not exist -- because by the time hints reach them.
++#
++# For code generators downstream can then simply pretend PEP 695 simply does not exist --
++# because by the time hints reach them, they are already plain, alias-free hints.
++
++
++def _apply_expand_type_alias_hook(
++    func: Callable[..., Any],
++) -> Callable[..., Any]:
++    '''
++    Trivial example decorator illustrating how a higher-level caller (e.g. the main
++    :func:`beartype.beartype` decorator) might hook PEP 695 type-alias
++    expansion into its hint-acquisition pipeline.
++
++    This is *NOT` meant to be production code; it is a pedagogical sketch only.
++    '''
++    # In a real integration point, the higher-level decorator would call
++    # ``_get_type_hint`` on each annotation it acquires from ``func`` right
++    # before invoking the existing sanification pipeline. For the purposes of this
++    # documentation-only sketch we simply return ``func`` unchanged.
++    return func
+diff --git a/beartype/_check/forward.py b/beartype/_check/forward.py
+new file mode 100644
+index 00000000..b585ba87
+--- /dev/null
++++ b/beartype/_check/forward.py
+@@ -0,0 +1,175 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++**Beartype forward-reference and type-alias expansion utilities** (i.e.,
++low-level callables resolving :pep:`484`-compliant forward references *and*
++recursively unwrapping :pep:`695`-compliant ``type`` statement aliases to a
++concrete non-alias type hint).
++
++This private submodule is *not* intended for importation by downstream callers.
++'''
++
++# ....................{ IMPORTS                            }....................
++from beartype.roar import BeartypeDecorHintPep695Exception
++from beartype._cave._cavefast import HintPep695TypeAlias
++from beartype._data.typing.datatypingport import Hint
++from beartype._util.py.utilpyversion import (
++    IS_PYTHON_AT_LEAST_3_12,
++)
++from typing import Optional
++
++# ....................{ EXPANDERS                          }....................
++def _expand_type_alias(
++    # Mandatory parameters.
++    hint: Hint,
++
++    # Optional parameters.
++    exception_cls: type = BeartypeDecorHintPep695Exception,
++    exception_prefix: str = '',
++    _seen: Optional[set] = None,
++) -> Hint:
++    '''
++    Recursively expand any :pep:`695`-compliant **type alias** (i.e., object
++    created by a ``type {alias_name}[{type_params}] = {alias_value}`` statement
++    under Python >= 3.12) nested within the passed type hint down to a concrete
++    non-alias type hint.
++
++    This helper is the single canonical entry point for unwrapping PEP 695
++    ``TypeAliasType`` objects at runtime. Specifically:
++
++    * If ``hint`` is a :obj:`typing.TypeAliasType` (i.e., the value of a
++      ``type Alias = ...`` statement), this helper returns the concrete hint
++      referred to by ``hint.__value__``, recursively expanding any further
++      aliases transitively referenced by that value.
++    * If ``hint`` is an unparameterizable alias (e.g. ``type Alias = int``),
++      the unwrapped hint is returned as is.
++    * If ``hint`` is a parameterized alias (e.g. ``Alias[int]`` for some
++      ``type Alias[T] = ...``), the underlying ``types.GenericAlias`` is
++      returned unchanged -- its ``__origin__`` is the ``TypeAliasType`` and
++      its ``__args__`` are the user-supplied type arguments; unwrapping the
++      origin would throw away the arguments, so parameterized aliases are
++      preserved verbatim and left to :mod:`beartype`'s existing generic
++      reduction machinery.
++    * If ``hint`` is *not* a PEP 695 alias, ``hint`` is returned unchanged.
++    * If unwrapping encounters a cycle (e.g. ``type A = B; type B = A``), the
++      loop is detected by tracking seen aliases in ``_seen`` and the original
++      alias is returned instead of infinitely recursing.
++
++    This helper is intentionally *not* memoized (e.g., by the
++    ``@callable_cached`` decorator). The underlying ``__value__`` descriptor
++    of :pep:`695` aliases is itself memoized, so repeated calls are cheap;
++    additionally, memoizing on the caller side would prevent the caller from
++    observing redefinitions of a given alias.
++
++    Parameters
++    ----------
++    hint : Hint
++        Possibly-PEP-695-aliased type hint to be expanded.
++    exception_cls : type, optional
++        Type of exception to be raised in the event of a fatal error. Defaults
++        to :exc:`.BeartypeDecorHintPep695Exception`.
++    exception_prefix : str, optional
++        Human-readable substring prefixing raised exception messages. Defaults
++        to the empty string.
++    _seen : set or None, optional
++        *Private* parameter used internally by this helper to track the
++        ``id(...)`` of each alias already visited during the current expansion
++        so as to break circular references. Callers should *never* pass this
++        parameter explicitly.
++
++    Returns
++    -------
++    Hint
++        Concrete non-alias type hint obtained by transitively unwrapping all
++        PEP 695 type aliases reachable from ``hint``, or ``hint`` unchanged if
++        ``hint`` is not such an alias.
++
++    Raises
++    ------
++    BeartypeDecorHintPep695Exception
++        If the passed hint is a PEP 695 type alias whose ``__value__``
++        descriptor raises a non-``NameError`` exception when accessed.
++    '''
++    assert exception_cls is not None, f'{repr(exception_cls)} None exception class.'
++    assert isinstance(exception_prefix, str), f'{repr(exception_prefix)} not string.'
++
++    # ....................{ FAST-PATH                      }....................
++    # If the active Python interpreter targets Python < 3.12, PEP 695 is
++    # unsupported by definition. In this case, this helper is a noop.
++    if not IS_PYTHON_AT_LEAST_3_12:
++        return hint
++    # Else, the active Python interpreter targets Python >= 3.12 and thus
++    # supports PEP 695.
++
++    # If this hint is *NOT* a PEP 695-compliant type alias, this hint requires
++    # no expansion and should be returned as is. This simultaneously rules out
++    # parameterized aliases (which are "types.GenericAlias" instances rather
++    # than "TypeAliasType" instances -- see below).
++    if not isinstance(hint, HintPep695TypeAlias):
++        return hint
++    # Else, this hint is a PEP 695-compliant type alias.
++
++    # ....................{ CYCLE-DETECTION                }....................
++    # Initialize the cycle-detection set on first entry. We use "id(...)"
++    # rather than the alias itself because PEP 695 alias objects are *NOT*
++    # hashable in general (their hashability depends on their value) but each
++    # alias object has a stable identity.
++    if _seen is None:
++        _seen = set()
++
++    # "id(hint)" is a small positive integer unique to this alias object for
++    # its lifetime, which is exactly what we need for cycle detection.
++    hint_id = id(hint)
++
++    if hint_id in _seen:
++        # This alias has already been visited on the current expansion path,
++        # implying a circular self-reference (e.g. "type A = B; type B = A").
++        # Break the cycle by returning the alias itself rather than recursing
++        # again. Downstream consumers (sanifiers, reducers, ...) already know
++        # how to deal with (or explicitly reject) bare alias objects; we simply
++        # must *not* blow the stack here.
++        return hint
++    # Else, this alias has *NOT* yet been visited on the current expansion
++    # path. In this case, record the visit and continue.
++
++    _seen.add(hint_id)
++
++    # ....................{ EXPANSION                      }....................
++    # Reduce this alias to the hint it aliases. Accessing "__value__" may
++    # raise:
++    # * "NameError" if the alias body contains one or more unresolved forward
++    #   references. That is a legitimate, expected state -- the caller is
++    #   responsible for resolving such references. We therefore bubble the
++    #   alias itself back up, letting higher-level machinery (e.g. the
++    #   "iter_hint_pep695_unsubbed_forwardrefs" iterator) deal with it.
++    # * Any other exception, which we wrap in a human-readable
++    #   "BeartypeDecorHintPep695Exception" prefixing the original failure.
++    try:
++        inner_hint: Hint = hint.__value__  # type: ignore[attr-defined]
++    except NameError:
++        # This alias body references one or more undefined attributes. Return
++        # the alias verbatim; forward-reference resolution happens elsewhere.
++        _seen.discard(hint_id)  # clean up so future expansion can retry
++        return hint
++    except Exception as exception:
++        raise exception_cls(
++            f'{exception_prefix}PEP 695 type alias '
++            f'{getattr(hint, "__name__", repr(hint))} has malformed '
++            f'"__value__": {exception}'
++        ) from exception
++
++    # Recursively expand any further PEP 695 aliases nested inside the value
++    # returned by "__value__". This handles chains like:
++    #     type A = B
++    #     type B = C
++    #     type C = int
++    # which should collapse straight to "int".
++    return _expand_type_alias(
++        hint=inner_hint,
++        exception_cls=exception_cls,
++        exception_prefix=exception_prefix,
++        _seen=_seen,
++    )
