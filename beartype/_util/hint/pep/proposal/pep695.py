@@ -308,23 +308,18 @@ def get_hint_pep695_unsubbed_alias(
         )
     # Else, this hint is a PEP 695-compliant unsubscripted type alias.
 
-    # While the Universe continues infinitely expanding...
-    while True:
-        # Reduce this type alias to the type hint aliased by this alias, which
-        # itself is possibly a nested type alias. Oh, it happens.
-        #
-        # Note that doing so implicitly raises a "NameError" if this alias
-        # contains one or more unquoted forward references to undefined types.
-        hint = hint.__value__  # type: ignore[attr-defined]
+    # Avoid circular import dependencies.
+    from beartype._check.forward import _expand_type_alias
 
-        # If this type hint is *NOT* a nested type alias, break this iteration.
-        if not isinstance(hint, HintPep695TypeAlias):
-            break
-        # Else, this type hint is a nested type alias. In this case, continue
-        # iteratively unwrapping this nested type alias.
-
-    # Return this unaliased type alias.
-    return hint
+    # Delegate to the cycle-safe recursive expander, which safely unwraps
+    # arbitrarily nested chains of PEP 695 type aliases to the base type
+    # hint while guarding against infinite recursion from self-referencing
+    # aliases.
+    #
+    # Note that doing so implicitly raises a "NameError" if this alias
+    # contains one or more unquoted forward references to undefined types.
+    return _expand_type_alias(
+        hint=hint, exception_prefix=exception_prefix)
 
 # ....................{ ADDERS                             }....................
 #FIXME: Unit test us up, please.
