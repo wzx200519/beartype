@@ -47,6 +47,7 @@ from beartype.roar import (
     BeartypeCallHintForwardRefException,
     BeartypeCallHintPep484ForwardRefStrException,
 )
+from beartype._check.forward import _expand_type_alias
 from beartype._conf.confcommon import BEARTYPE_CONF_NONRANDOM
 from beartype._data.kind.datakindiota import SENTINEL
 from beartype._data.typing.datatyping import TypeException
@@ -806,6 +807,11 @@ class BeartypeForwardRefMeta(type):
         # 484-specific manner.
         else:
             referent_hint = _resolve_hint_pep484_ref_str(cls)
+
+        referent_hint = _expand_type_alias(
+            hint=referent_hint,
+            exception_prefix=_make_ref_proxy_exception_prefix(cls),
+        )
 
         # ....................{ VALIDATE                   }....................
         # If this referent is this forward reference proxy, this proxy

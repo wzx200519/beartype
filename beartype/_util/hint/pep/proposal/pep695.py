@@ -308,8 +308,19 @@ def get_hint_pep695_unsubbed_alias(
         )
     # Else, this hint is a PEP 695-compliant unsubscripted type alias.
 
-    # While the Universe continues infinitely expanding...
+    hint_ids_seen = set()
+
     while True:
+        hint_id = id(hint)
+
+        if hint_id in hint_ids_seen:
+            raise BeartypeDecorHintPep695Exception(
+                f'{exception_prefix}PEP 695 type alias {repr(hint)} '
+                f'circularly references itself.'
+            )
+
+        hint_ids_seen.add(hint_id)
+
         # Reduce this type alias to the type hint aliased by this alias, which
         # itself is possibly a nested type alias. Oh, it happens.
         #

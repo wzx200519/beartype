@@ -1,0 +1,92 @@
+diff --git a/beartype/_check/forward/__init__.py b/beartype/_check/forward/__init__.py
+index e69de29b..bb573ef5 100644
+--- a/beartype/_check/forward/__init__.py
++++ b/beartype/_check/forward/__init__.py
+@@ -0,0 +1,38 @@
++#!/usr/bin/env python3
++# --------------------( LICENSE                            )--------------------
++# Copyright (c) 2014-2026 Beartype authors.
++# See "LICENSE" for further details.
++
++'''
++Beartype forward type hint utilities.
++
++This private subpackage is *not* intended for importation by downstream callers.
++'''
++
++from beartype.roar import (
++    BeartypeCallHintForwardRefException,
++    BeartypeDecorHintPep695Exception,
++)
++from beartype._cave._cavefast import HintPep695TypeAlias
++from beartype._data.typing.datatyping import TypeException
++from beartype._data.typing.datatypingport import Hint
++
++
++def _expand_type_alias(
++    hint: Hint,
++    exception_cls: TypeException = BeartypeCallHintForwardRefException,
++    exception_prefix: str = '',
++) -> Hint:
++    if not isinstance(hint, HintPep695TypeAlias):
++        return hint
++
++    from beartype._util.hint.pep.proposal.pep695 import (
++        get_hint_pep695_unsubbed_alias)
++
++    try:
++        return get_hint_pep695_unsubbed_alias(
++            hint=hint,
++            exception_prefix=exception_prefix,
++        )
++    except BeartypeDecorHintPep695Exception as exception:
++        raise exception_cls(str(exception)) from exception
+diff --git a/beartype/_check/forward/reference/_cls/fwdrefmeta.py b/beartype/_check/forward/reference/_cls/fwdrefmeta.py
+index 15916553..53b7b0ac 100644
+--- a/beartype/_check/forward/reference/_cls/fwdrefmeta.py
++++ b/beartype/_check/forward/reference/_cls/fwdrefmeta.py
+@@ -47,6 +47,7 @@ from beartype.roar import (
+     BeartypeCallHintForwardRefException,
+     BeartypeCallHintPep484ForwardRefStrException,
+ )
++from beartype._check.forward import _expand_type_alias
+ from beartype._conf.confcommon import BEARTYPE_CONF_NONRANDOM
+ from beartype._data.kind.datakindiota import SENTINEL
+ from beartype._data.typing.datatyping import TypeException
+@@ -807,6 +808,11 @@ class BeartypeForwardRefMeta(type):
+         else:
+             referent_hint = _resolve_hint_pep484_ref_str(cls)
+ 
++        referent_hint = _expand_type_alias(
++            hint=referent_hint,
++            exception_prefix=_make_ref_proxy_exception_prefix(cls),
++        )
++
+         # ....................{ VALIDATE                   }....................
+         # If this referent is this forward reference proxy, this proxy
+         # circularly proxies itself. Since allowing this edge case would openly
+diff --git a/beartype/_util/hint/pep/proposal/pep695.py b/beartype/_util/hint/pep/proposal/pep695.py
+index 57a334d1..cf8f07a4 100644
+--- a/beartype/_util/hint/pep/proposal/pep695.py
++++ b/beartype/_util/hint/pep/proposal/pep695.py
+@@ -308,8 +308,19 @@ def get_hint_pep695_unsubbed_alias(
+         )
+     # Else, this hint is a PEP 695-compliant unsubscripted type alias.
+ 
+-    # While the Universe continues infinitely expanding...
++    hint_ids_seen = set()
++
+     while True:
++        hint_id = id(hint)
++
++        if hint_id in hint_ids_seen:
++            raise BeartypeDecorHintPep695Exception(
++                f'{exception_prefix}PEP 695 type alias {repr(hint)} '
++                f'circularly references itself.'
++            )
++
++        hint_ids_seen.add(hint_id)
++
+         # Reduce this type alias to the type hint aliased by this alias, which
+         # itself is possibly a nested type alias. Oh, it happens.
+         #
