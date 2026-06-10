@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: "[${{ matrix.platform }}] Python ${{ matrix.python-version }} test"
+    runs-on: "${{ matrix.platform }}"
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+    env:
+      PIP_NO_PIP_VERSION_CHECK: 1
+      PIP_PREFER_BINARY: 1
+      PYTHONFAULTHANDLER: 1
+      PYTHONUNBUFFERED: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python-version }}"
+          allow-prereleases: true
+
+      - name: Upgrade pip and install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test-tox,test-tox-coverage]"
+
+      - name: Run tests with coverage
+        shell: bash
+        run: |
+          coverage run -m pytest --maxfail=1 -p no:asyncio -p no:xvfb
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          name: "test-${{ matrix.platform }}-${{ matrix.python-version }}"
+          flag: test
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          fail_ci_if_error: false
+
+  test_door:
+    name: "beartype.door submodule test"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+    env:
+      PIP_NO_PIP_VERSION_CHECK: 1
+      PIP_PREFER_BINARY: 1
+      PYTHONFAULTHANDLER: 1
+      PYTHONUNBUFFERED: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python-version }}"
+          allow-prereleases: true
+
+      - name: Upgrade pip and install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test-tox,test-tox-coverage]"
+
+      - name: Run beartype.door tests with coverage
+        shell: bash
+        run: |
+          pytest beartype/door/ -v --cov=beartype.door --cov-append
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          name: "test-door-${{ matrix.python-version }}"
+          flag: test_door
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          fail_ci_if_error: false
