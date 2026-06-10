@@ -246,3 +246,63 @@ def test_api_vale_is_fail() -> None:
         IsNonEmpty & 'While horse and hero fell.'
     with raises(BeartypeValeSubscriptionException):
         IsNonEmpty | 'While horse and hero fell.'
+
+
+class TestIsPerformance(object):
+    '''
+    Benchmark :mod:`beartype.vale.Is` validation overhead.
+    '''
+
+    _baseline_mean = None
+
+    def test_api_vale_is_performance_int(self, benchmark) -> None:
+        '''
+        Benchmark baseline runtime type checking for :class:`int`.
+        '''
+
+        from beartype import beartype
+
+        @beartype
+        def accepts_int(number: int) -> int:
+            return number
+
+        result = benchmark.pedantic(
+            accepts_int,
+            args=(1,),
+            iterations=5000,
+            rounds=25,
+        )
+
+        assert result == 1
+        type(self)._baseline_mean = benchmark.stats.stats.mean
+        assert type(self)._baseline_mean is not None
+
+    def test_api_vale_is_performance_lambda(self, benchmark) -> None:
+        '''
+        Benchmark lambda-backed :mod:`beartype.vale.Is` validation overhead.
+        '''
+
+        from beartype import beartype
+        from beartype._util.api.standard.utiltyping import get_typing_attrs
+        from beartype.vale import Is
+
+        Annotated = next(iter(get_typing_attrs('Annotated')))
+
+        @beartype
+        def accepts_positive_int(
+            number: Annotated[int, Is[lambda x: x > 0]],
+        ) -> int:
+            return number
+
+        result = benchmark.pedantic(
+            accepts_positive_int,
+            args=(1,),
+            iterations=5000,
+            rounds=25,
+        )
+
+        validator_mean = benchmark.stats.stats.mean
+
+        assert result == 1
+        assert type(self)._baseline_mean is not None
+        assert validator_mean <= type(self)._baseline_mean * 2
