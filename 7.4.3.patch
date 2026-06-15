@@ -1,102 +1,68 @@
-在 `beartype` 中处理 PEP 695 `TypeAliasType` (例如 `type X = ...`) 的运行时嵌套展开时，关键是要防止自引用类型别名 (如 `type Node = int | list[Node]`) 引发的无限递归。我们可以通过引入一个 `seen` 集合记录已访问的 `TypeAliasType` 的对象 ID，来实现安全的嵌套展开。
-
-以下是完整的 `_expand_type_alias` 辅助函数代码，以及如何将其挂钩到 `_get_type_hint` (或相似类型获取入口点) 方法中的详细说明。
-
-### 1. 新增 `_expand_type_alias` 辅助函数
-
-在 `beartype/_check/forward.py` 中添加以下辅助函数：
-
-```python
-import typing
-from typing import Any, Set, Optional
-
-def _expand_type_alias(hint: Any, _seen: Optional[Set[int]] = None) -> Any:
-    """
-    递归展开 PEP 695 TypeAliasType (即 type X = ... 语句) 至其基础类型。
-    
-    使用 _seen 集合追踪已访问的类型别名对象 ID，
-    以防止在解析自引用/递归类型别名时发生无限死循环。
-    
-    Args:
-        hint (Any): 需要展开的类型提示。
-        _seen (Optional[Set[int]]): 内部参数，用于死循环检测的集合。
-        
-    Returns:
-        Any: 展开后的基础类型。如果检测到死循环或传入的不是 TypeAliasType，则返回原类型。
-    """
-    # 延迟初始化集合
-    if _seen is None:
-        _seen = set()
-        
-    # 检查是否为 Python 3.12+ 引入的 PEP 695 TypeAliasType
-    # 通过类名和属性检查，确保在旧版本 Python 中也不会触发 ImportError
-    if type(hint).__name__ == 'TypeAliasType' and hasattr(hint, '__value__'):
-        hint_id = id(hint)
-        
-        # 循环引用检测：如果已经访问过该别名，则停止展开，防止死循环
-        if hint_id in _seen:
-            return hint
-            
-        _seen.add(hint_id)
-        
-        # 递归展开其底层的 __value__ 属性
-        return _expand_type_alias(hint.__value__, _seen)
-    
-    # ---------------------------------------------------------
-    # 可选：如果需要深度遍历泛型参数（例如 list[Alias], Union[Alias, str]）
-    # ---------------------------------------------------------
-    origin = typing.get_origin(hint)
-    if origin is not None:
-        args = typing.get_args(hint)
-        if args:
-            # 展开所有子参数
-            expanded_args = tuple(_expand_type_alias(arg, _seen.copy()) for arg in args)
-            # 如果参数发生变化，尝试重建泛型类型
-            if expanded_args != args:
-                try:
-                    # 对于很多 typing 泛型，可以直接用 origin[expanded_args]
-                    return hint.copy_with(expanded_args) if hasattr(hint, 'copy_with') else origin[expanded_args]
-                except (TypeError, AttributeError):
-                    pass
-                    
-    return hint
-```
-
-### 2. 挂钩到现有的 `_get_type_hint` 方法
-
-在 `beartype/_check/check.py`（或其他统一的类型解析入口）中，找到 `_get_type_hint` 方法。我们需要在它提取出原始类型提示后、进入 `beartype` 的核心校验与转换逻辑（如 `reduce_hint` 或 `sanify`）前，调用该辅助函数。
-
-挂钩逻辑示例：
-
-```python
-# 假设这是在 beartype/_check/check.py 中
-
-# 引入刚刚定义的辅助函数
-# from beartype._check.forward import _expand_type_alias
-
-def _get_type_hint(obj: Any, name: str, **kwargs) -> Any:
-    """
-    获取并解析对象上的类型提示。
-    """
-    # 1. 现有的基础逻辑：从对象的 __annotations__ 等位置获取原始类型提示
-    raw_hint = ... # 例如 getattr(obj, '__annotations__', {}).get(name)
-    
-    if raw_hint is None:
-        return None
-
-    # ==========================================
-    # 2. 新增挂钩逻辑：在返回前展开 PEP 695 别名
-    # ==========================================
-    expanded_hint = _expand_type_alias(raw_hint)
-    
-    # 3. 现有的后续逻辑：进一步的包装、规范化 (sanification) 
-    # normalized_hint = _normalize_hint(expanded_hint)
-    
-    return expanded_hint
-```
-
-### 核心实现细节与原理
-
-- **前向与后向兼容性**：代码没有直接使用 `from typing import TypeAliasType`，而是通过 `type(hint).__name__ == 'TypeAliasType'` 和 `hasattr(hint, '__value__')` 进行判断。这确保了该功能在 Python 3.11 及以下版本执行时不会因为导入不存在的类而崩溃。
-- **防止死循环（`_seen` 机制）**：当遇到递归定义如 `type Node = int | list[Node]` 时，函数在第二次递归解析 `Node` 时会识别出其内存 ID `id(hint)` 已存在于 `_seen` 集合中，直接将其作为叶子节点返回，从而安全地保留了数据结构的递归特征，避免无限递归。
-- **深度解析穿透**：通过 `get_origin` 和 `get_args` 的处理，如果 `TypeAliasType` 被嵌套在泛型如 `list`、`dict` 或 `Union` 中（例如 `list[MyAlias]`），该函数也能穿透泛型外层进行递归替换，使 `@beartype` 能获取到纯粹的基础类型树，大大增强后续类型校验的准确性。
+diff --git a/beartype/_check/forward.py b/beartype/_check/forward.py
+new file mode 100644
+index 0000000..8b13789
+--- /dev/null
++++ b/beartype/_check/forward.py
+@@ -0,0 +42,42 @@
++import typing
++from typing import Any, Set, Optional
++
++def _expand_type_alias(hint: Any, _seen: Optional[Set[int]] = None) -> Any:
++    """
++    递归展开 PEP 695 TypeAliasType (即 type X = ... 语句) 至其基础类型。
++    
++    使用 _seen 集合追踪已访问的类型别名对象 ID，
++    以防止在解析自引用/递归类型别名时发生无限死循环。
++    
++    Args:
++        hint (Any): 需要展开的类型提示。
++        _seen (Optional[Set[int]]): 内部参数，用于死循环检测的集合。
++        
++    Returns:
++        Any: 展开后的基础类型。如果检测到死循环或传入的不是 TypeAliasType，则返回原类型。
++    """
++    if _seen is None:
++        _seen = set()
++        
++    if type(hint).__name__ == 'TypeAliasType' and hasattr(hint, '__value__'):
++        hint_id = id(hint)
++        
++        if hint_id in _seen:
++            return hint
++            
++        _seen.add(hint_id)
++        
++        return _expand_type_alias(hint.__value__, _seen)
++    
++    origin = typing.get_origin(hint)
++    if origin is not None:
++        args = typing.get_args(hint)
++        if args:
++            expanded_args = tuple(_expand_type_alias(arg, _seen.copy()) for arg in args)
++            if expanded_args != args:
++                try:
++                    return hint.copy_with(expanded_args) if hasattr(hint, 'copy_with') else origin[expanded_args]
++                except (TypeError, AttributeError):
++                    pass
++                    
++    return hint
+diff --git a/beartype/_check/check.py b/beartype/_check/check.py
+new file mode 100644
+index 0000000..9e5d1a2
+--- /dev/null
++++ b/beartype/_check/check.py
+@@ -0,0 +13,13 @@
++# 假设这是在 beartype/_check/check.py 中
++
++from typing import Any
++# from beartype._check.forward import _expand_type_alias
++
++def _get_type_hint(obj: Any, name: str, **kwargs) -> Any:
++    raw_hint = None # 例如 getattr(obj, '__annotations__', {}).get(name)
++    
++    if raw_hint is None:
++        return None
++
++    expanded_hint = _expand_type_alias(raw_hint)
++    
++    return expanded_hint
