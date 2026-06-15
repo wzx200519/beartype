@@ -1,13 +1,10 @@
-diff --git a/7.2.3patch b/7.2.3patch
-new file mode 100644
-index 00000000..874583d4
---- /dev/null
-+++ b/7.2.3patch
-@@ -0,0 +1,36 @@
+--- a/beartype/beartype_test/math_ops.py
++++ b/beartype/beartype_test/math_ops.py
+@@ -1,5 +1,30 @@
 +import inspect
 +from functools import wraps
-+from beartype import beartype
-+
+ from beartype import beartype
+ 
 +def coerce_int_args(func):
 +    """
 +    自动尝试将标注为 int 的参数转换为整数。
@@ -17,26 +14,21 @@ index 00000000..874583d4
 +    
 +    @wraps(func)
 +    def wrapper(*args, **kwargs):
-+        # 绑定传入的位置参数和关键字参数
 +        bound = sig.bind(*args, **kwargs)
 +        bound.apply_defaults()
 +        
-+        # 遍历所有参数，若类型注解为 int，则尝试转换
 +        for name, value in bound.arguments.items():
 +            param = sig.parameters[name]
 +            if param.annotation is int and not isinstance(value, int):
 +                try:
 +                    bound.arguments[name] = int(value)
 +                except (ValueError, TypeError):
-+                    # 转换失败（例如传入了 "abc"）时忽略错误并保留原值
 +                    pass
 +                    
-+        # 将清洗后的参数解包传递给原始函数
 +        return func(*bound.args, **bound.kwargs)
 +    return wrapper
 +
-+# 注意装饰器顺序：先执行 coerce_int_args 清洗，再执行 beartype 验证
 +@coerce_int_args
-+@beartype
-+def divide(a: int, b: int) -> float:
-+    return a / b
+ @beartype
+ def divide(a: int, b: int) -> float:
+     return a / b
