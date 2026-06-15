@@ -17,6 +17,14 @@ from beartype.roar import BeartypeCallHintParamViolation
 from functools import wraps
 
 # ....................{ HELPERS                            }....................
+_INT_PARAM_NAMES = ('a', 'b')
+'''
+Names of the integer parameters accepted by the :func:`divide` callable,
+enumerated so that the lenient string-to-integer coercion layer iterates over
+these parameters only.
+'''
+
+
 def _coerce_str_to_int(value, *, name: str):
     '''
     Attempt to coerce the passed value to an :class:`int`.
@@ -65,7 +73,41 @@ def _coerce_str_to_int(value, *, name: str):
         f'{type(value).__name__} {repr(value)}'
     )
 
-# ....................{ OPS                                }....................
+
+def _coerce_int_args_and_kwargs(*args, **kwargs):
+    '''
+    Coerce positional and keyword arguments corresponding to the integer
+    parameters accepted by :func:`divide` in place and return the resulting
+    ``(args, kwargs)`` pair.
+
+    Each argument is coerced via :func:`_coerce_str_to_int`; non-integer
+    arguments that cannot be parsed as integers trigger a
+    :exc:`beartype.roar.BeartypeCallHintParamViolation`.
+    '''
+
+    coerced_args = list(args)
+    for index, name in enumerate(_INT_PARAM_NAMES):
+        if index < len(coerced_args):
+            coerced_args[index] = _coerce_str_to_int(
+                coerced_args[index], name=name,
+            )
+    for name in _INT_PARAM_NAMES:
+        if name in kwargs:
+            kwargs[name] = _coerce_str_to_int(kwargs[name], name=name)
+    return tuple(coerced_args), kwargs
+
+# ....................{ OPS ~ strict                       }....................
+@beartype
+def _divide_strict(a: int, b: int) -> float:
+    '''
+    Strict implementation of the :func:`divide` function, accepting only
+    :class:`int` arguments and returning a :class:`float` — both of which are
+    enforced at call time by the :func:`beartype.beartype` decorator.
+    '''
+
+    return a / b
+
+
 @beartype
 def divide(a: int, b: int) -> float:
     '''
@@ -100,19 +142,20 @@ def divide(a: int, b: int) -> float:
 
     return a / b
 
-
-def _divide_lenient(*args, **kwargs) -> float:
+# ....................{ OPS ~ lenient                      }....................
+def _divide_lenient_impl(*args, **kwargs) -> float:
     '''
     Lenient variant of the :func:`divide` function silently coercing
     :class:`str` arguments parsable as integers to integers *before* delegating
     to the strict :func:`@beartype <beartype.beartype>`-decorated
-    :func:`divide` function.
+    :func:`_divide_strict` function.
 
     This function intentionally accepts only two positional arguments matching
     the ``a`` and ``b`` parameters expected by :func:`divide`; all other
-    arguments are preserved as is and delegated to :func:`divide` — thereby
-    preserving the :func:`@beartype <beartype.beartype>` decorator's runtime
-    type-checking of the resulting integer arguments *and* return value.
+    arguments are preserved as is and delegated to :func:`_divide_strict` —
+    thereby preserving the :func:`@beartype <beartype.beartype>` decorator's
+    runtime type-checking of the resulting integer arguments *and* return
+    value.
 
     See Also
     --------
@@ -120,21 +163,55 @@ def _divide_lenient(*args, **kwargs) -> float:
         Further commentary.
     '''
 
-    coerced_args = list(args)
-    if coerced_args:
-        coerced_args[0] = _coerce_str_to_int(coerced_args[0], name='a')
-    if len(coerced_args) > 1:
-        coerced_args[1] = _coerce_str_to_int(coerced_args[1], name='b')
-    if 'a' in kwargs:
-        kwargs['a'] = _coerce_str_to_int(kwargs['a'], name='a')
-    if 'b' in kwargs:
-        kwargs['b'] = _coerce_str_to_int(kwargs['b'], name='b')
-    return divide(*coerced_args, **kwargs)
+    coerced_args, coerced_kwargs = _coerce_int_args_and_kwargs(*args, **kwargs)
+    return _divide_strict(*coerced_args, **coerced_kwargs)
 
 
-divide_lenient = wraps(divide)(_divide_lenient)
-'''
-Lenient variant of the :func:`divide` function silently coercing numeric
-strings (e.g., ``"10"``) to integers *before* delegating to the strict
-:func:`@beartype <beartype.beartype>`-decorated :func:`divide` function.
-'''
+def _divide_lenient_impl_deprecated(*args, **kwargs) -> float:
+    '''
+    Deprecated helper preserved for backwards compatibility — currently
+    unused but retained to avoid breakage for any downstream consumers that
+    may have referenced this symbol directly.
+
+    This now simply delegates to :func:`_divide_lenient_impl`.
+    '''
+
+    return _divide_lenient_impl(*args, **kwargs)
+
+
+def _make_lenient_divide(strict_callable):
+    '''
+    Return a lenient wrapper around the passed strictly-typed callable which
+    silently coerces numeric strings to integers *before* delegating to the
+    passed callable — preserving :func:`@beartype <beartype.beartype>` runtime
+    verification of the resulting :class:`int` arguments *and* return value.
+
+    Parameters
+    ----------
+    strict_callable : callable
+        A :func:`@beartype <beartype.beartype>`-decorated callable whose
+        signature matches :func:`divide` (two integer parameters).
+
+    Returns
+    -------
+    callable
+        A wrapper callable with the same metadata as ``strict_callable`` that
+        transparently coerces numeric strings on the way in.
+    '''
+
+    @wraps(strict_callable)
+    def _lenient_wrapper(*args, **kwargs) -> float:
+        coerced_args, coerced_kwargs = _coerce_int_args_and_kwargs(
+            *args, **kwargs,
+        )
+        return strict_callable(*coerced_args, **coerced_kwargs)
+
+    return _lenient_wrapper
+
+
+# Lenient ``divide`` alias: callers may invoke ``divide("10", 2)`` without
+# modifying their call sites, and numeric strings will be silently coerced.
+divide = _make_lenient_divide(divide)
+
+# Backwards-compatible public alias.
+divide_lenient = wraps(divide)(_divide_lenient_impl)
