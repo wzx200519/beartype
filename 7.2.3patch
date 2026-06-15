@@ -1,3 +1,4 @@
+diff --git a/beartype/beartype_test/math_ops.py b/beartype/beartype_test/math_ops.py
 --- a/beartype/beartype_test/math_ops.py
 +++ b/beartype/beartype_test/math_ops.py
 @@ -1,5 +1,30 @@
